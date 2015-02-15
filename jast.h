@@ -2,6 +2,81 @@
 // Javascript Abstract Syntax Tree.
 typedef union JAST_Statement JAST_Statement;
 
+
+typedef struct JAST_FieldBindingPattern JAST_FieldBindingPattern;
+typedef struct JAST_BindingPattern JAST_BindingPattern;
+
+typedef enum
+{
+  JAST_BINDING_PATTERN_SIMPLE,
+  JAST_BINDING_PATTERN_ARRAY,
+  JAST_BINDING_PATTERN_OBJECT,
+} JAST_BindingPatternType;
+
+struct JAST_BindingPattern {
+  JAST_BindingPatternType type;
+  union {
+    JS_String *simple;
+    struct {
+      size_t n_subs;
+      JAST_BindingPattern **subs;    /* elements may be NULL */
+    } array;
+    struct {
+      size_t n_fields;
+      JAST_FieldBindingPattern *fields;    /* elements may be NULL */
+    } object;
+  } info;
+  JAST_Expr *initializer;
+};
+
+struct JAST_FieldBindingPattern {
+  JS_String *name;
+  JAST_BindingPattern binding;
+};
+
+typedef struct {
+  unsigned ref_count;
+  /* string follows */
+} JAST_Filename;
+
+typedef struct {
+  JAST_Filename *filename;
+  unsigned line_number;
+} JAST_Position;
+
+typedef struct JAST_Base_Statement {
+  JAST_StatementType type;
+  JAST_Position position;
+} JAST_Base_Statement;
+
+typedef struct JAST_Compound_Statement {
+  JAST_Base_Statement base;
+  size_t n_children;
+  JAST_Statement **children;
+} JAST_Base_Statement;
+
+typedef struct {
+
+struct JAST_BindingPattern {
+  JAST_BindingPatternType type;
+  union {
+    JS_String *simple;
+    struct {
+      size_t n_subs;
+      JAST_BindingPattern **subs;    /* elements may be NULL */
+    } array;
+    struct {
+      size_t n_fields;
+      JAST_FieldBindingPattern *fields;    /* elements may be NULL */
+    } object;
+  } info;
+};
+
+struct JAST_FieldBindingPattern {
+  JS_String *name;
+  JAST_BindingPattern binding;
+};
+
 typedef struct {
   unsigned ref_count;
   /* string follows */
@@ -106,6 +181,7 @@ typedef struct {
   JAST_Statement_Base base;
   JAST_String *label;
 } JAST_Statement_Goto;
+
 
 union {
   JAST_StatementType type;

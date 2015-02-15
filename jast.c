@@ -1,3 +1,19 @@
+#define LBRACE_CHAR   '{'
+#define LBRACE_STR    "{"
+#define RBRACE_CHAR   '}'
+#define RBRACE_STR    "}"
+
+#define IS_DECIMAL_DIGIT(c)       \
+  ('0' <= (c) && (c) <= '9')
+#define IS_OCTAL_DIGIT(c)         \
+  ('0' <= (c) && (c) <= '7')
+#define IS_BINARY_DIGIT(c)        \
+  ('0' <= (c) && (c) <= '1')
+#define IS_HEXIDECIMAL_DIGIT(c)   \
+  (  IS_DECIMAL_DIGIT(c)          \
+  || ('a' <= (c) && (c) <= 'f')   \
+  || ('A' <= (c) && (c) <= 'F') )
+
 /* Filenames and positions in source code */
 typedef struct {
   JAST_Filename *filename;
@@ -112,11 +128,95 @@ lexer_get_next_token_raw_qstring (JAST_Lexer *lexer, JAST_Token *token)
     {
       if (*at == '\\')
         {
-          ...
+          if (at + 1 == end)
+            goto premature_eof;
+          switch (at[1])
+            {
+            case '\n':          /* line terminator sequence */
+              at += 2;
+              lexer->line_number += 1;
+              break;
+
+            /* "single escape characters" */
+            case '\'': case '"': case '\\': 
+            case 'b': case 'f': case 'n': case 'r': case 't': case 'v':
+              at += 2;
+              continue;
+
+            case 'u':
+              /* "unicode escape sequence" */
+              /* either uXXXX or u{X+} */
+              if (at + 2 == end)
+                goto premature_eof;
+              if (at[2] == LBRACE_CHAR)
+                {
+                  at += 2;
+                  while (at < end && *at != RBRACE_CHAR)
+                    {
+                      if (!IS_HEXIDECIMAL_DIGIT (*at))
+                        goto bad_char;
+                      at++;
+                    }
+                  if (at == end)
+                    goto premature_eof;
+                  at += 1;              /* skip right-brace */
+                }
+              else
+                {
+                  if (at + 6 > end)
+                    goto premature_eof;
+                  if (!IS_HEXIDECIMAL_DIGIT(at[2])
+                   || !IS_HEXIDECIMAL_DIGIT(at[3])
+                   || !IS_HEXIDECIMAL_DIGIT(at[4])
+                   || !IS_HEXIDECIMAL_DIGIT(at[5]))
+                    goto bad_char;
+                  at += 6;
+                  continue;
+                }
+              break;
+
+            case 'x':
+              /* xXX */
+              if (end < at + 4)
+                goto premature_eof;
+              if (!IS_HEXIDECIMAL_DIGIT(at[2]) || !IS_HEXIDECIMAL_DIGIT(at[3]))
+                goto bad_char;
+              at += 4;
+              break;
+
+            case '0':
+              /* special case for \0 */
+              if (end == at + 2 || !IS_DECIMAL_DIGIT(at[2]))
+                {
+                  at += 2;
+                  continue;
+                }
+              // otherwise fall-through to legacy octal handling
+              
+            case '1': case '2': case '3':
+            case '4': case '5': case '6': case '7':
+              if (lexer->support_legacy_octal)
+                {
+                  if (end < at + 4)
+                    goto premature_eof;
+                  if (!IS_OCTAL_DIGIT (at[2]) || !IS_OCTAL_DIGIT (at[3]))
+                    goto bad_char;
+                  at += 4;
+                  continue;
+                }
+              else
+                goto bad_char;
+
+            /* Finally, non-escape characters */
+            default:
+              at += 2;
+              continue;
+            }
         }
       else if (*at == '\n')
         {
-          ... handle multiline strings?
+          /* newlines not allowed in quoted-strings */
+          goto bad_char;
         }
       else
         {
@@ -128,26 +228,210 @@ lexer_get_next_token_raw_qstring (JAST_Lexer *lexer, JAST_Token *token)
       lexer->error = unterminated quoted string
       return JAST_LEXER_ADVANCE_ERROR;
     }
+  token->type = JAST_TOKEN_STRING;
   token->length = at + 1 - q_start;
   lexer->offset = at + 1 - lexer->data;
   return JAST_LEXER_ADVANCE_OK;
+
+bad_char:
+  lexer->error = parse_error("unexpected character '%c'", *at);
+  return JAST_LEXER_ADVANCE_ERROR;
+
+premature_eof:
+  lexer->error = premature_eof_parse_error ("in quoted-string");
+  return JAST_LEXER_ADVANCE_ERROR;
 }
+
 static JAST_Lexer_AdvanceResult
 lexer_get_next_token_raw_number (JAST_Lexer *lexer, JAST_Token *token)
 {
-...
+  /* See Spec 11.8.3 */
+  const char *end = lexer->data + lexer->data_size;
+  const char *n_start = lexer->data + lexer->offset;
+  const char *at = n_start;
+#define SKIP_WITH_PREDICATE(pred)  \
+  while (at < end && (pred (*at))) \
+    at++
+  if (*at == '0')
+    {
+      if (at + 1 == end)
+        {
+          at++;
+          goto success;
+        }
+      if (at[1] == 'o' || at[1] == 'O')
+        {
+          /* octal integer */
+          if (at + 2 == end)
+            goto premature_eof;
+          at += 2;
+          if (!IS_OCTAL_DIGIT (*at))
+            goto bad_char;
+          at++;
+          SKIP_WITH_PREDICATE(IS_OCTAL_DIGIT);
+          if (at < end && is_ok_post_number_character (*at))
+            goto bad_char;
+          goto success;
+        }
+      else if (at[1] == 'b' || at[1] == 'B')
+        {
+          if (at + 2 == end)
+            goto premature_eof;
+          at += 2;
+          if (!IS_BINARY_DIGIT (*at))
+            goto bad_char;
+          at++;
+          SKIP_WITH_PREDICATE(IS_BINARY_DIGIT);
+        }
+      else if (at[1] == 'x' || at[1] == 'x')
+        {
+          if (at + 2 == end)
+            goto premature_eof;
+          if (at + 2 == end)
+            goto premature_eof;
+          at += 2;
+          if (!IS_HEXIDECIMAL_DIGIT (*at))
+            goto bad_char;
+          at++;
+          SKIP_WITH_PREDICATE(IS_HEXIDECIMAL_DIGIT);
+        }
+      else
+        goto decimal_number;
+    }
+  else if (*at == '.' || ('1' <= *at && *at <= '9'))
+    {
+      goto decimal_number;
+    }
+  else
+    {
+      goto bad_char;
+    }
+
+decimal_number:
+  SKIP_WITH_PREDICATE (IS_DECIMAL_DIGIT);
+  if (at < end && *at == '.')
+    {
+      at++;
+      SKIP_WITH_PREDICATE (IS_DECIMAL_DIGIT);
+    }
+  if (at < end && (*at == 'e' || *at == 'E'))
+    {
+      at++;
+      if (at < end && (*at == '+' || *at == '-'))
+        at++;
+      if (at == end)
+        goto premature_eof;
+      if (!IS_DECIMAL_DIGIT(*at))
+        goto bad_char;
+      SKIP_WITH_PREDICATE (IS_DECIMAL_DIGIT);
+    }
+  if (n_start == at)
+    goto bad_char;
+  goto success;
+
+success:
+  token->type = JAST_TOKEN_NUMBER;
+  token->length = at - n_start;
+  lexer->offset = at - lexer->data;
+  return JAST_LEXER_ADVANCE_OK;
+
+bad_char:
+  lexer->error = parse_error("unexpected character '%c'", *at);
+  return JAST_LEXER_ADVANCE_ERROR;
+
+premature_eof:
+  lexer->error = premature_eof_parse_error ("in number");
+  return JAST_LEXER_ADVANCE_ERROR;
+
+#undef SKIP_WITH_PREDICATE
 }
 
 static JAST_Lexer_AdvanceResult
 lexer_get_next_token_raw_regex (JAST_Lexer *lexer, JAST_Token *token)
 {
   /* See Spec 11.8.5 */
-  ...
+  const char *end = lexer->data + lexer->data_size;
+  const char *regex_start = lexer->data + lexer->offset;
+  const char *at = regex_start;
+
+  assert (*at == '/');
+  if (at + 3 > end)
+    goto premature_eof;
+
+  at++;     /* skip initial slash */
+
+  /* Handle lexing rule that
+     '*' is not allowed by RegularExpressionFirstChar
+     but is allowed by RegularExpressionChar
+     (which is handled by the loop below). */
+  if (*at == '*')
+    goto bad_char;
+
+  while (at < end && *at != '/')
+    {
+      switch (*at)
+        {
+          case '\\':
+            if (at + 1 == end)
+              goto premature_eof;
+            if (at[1] == '\n')
+              goto bad_char;
+            at += 2;
+            continue;
+          case '[':
+            at++;
+            while (at < end && *at != ']' && *at != '\n')
+              {
+                if (*at == '\\')
+                  {
+                    at++;
+                    if (at == end)
+                      goto premature_eof;
+                    if (*at == '\n')
+                      goto bad_char;
+                    at++;
+                  }
+                else
+                  at++;
+              }
+            if (at == end)
+              goto premature_eof;
+            if (*at == '\n')
+              goto bad_char;
+            at++;
+            break;
+          case '\n':
+            goto bad_char;  /* newline not allowed in regex */
+          default:
+            at++;       /* RENonTerminator but not one of / \ or [ */
+            break;
+        }
+    }
+  if (at == end)
+    goto premature_eof;
+  assert (*at == '/');
+  at++;
+
+  /* skip flags (like "i" for case-insensitive) see spec ... */
+  while (at < end && scan_identifier_continue_char (&at, end))
+    ;
+  token->length = r_start - at;
+  token->type = JAST_TOKEN_REGEX;
+  lexer->offset = at - lexer->data;
+  return JAST_LEXER_ADVANCE_OK;
+
+premature_eof:
+  lexer->error = premature_eof_parse_error("in regex");
+  return JAST_LEXER_ADVANCE_ERROR;
+
+bad_char:
+  lexer->error = bad_char_parse_error(at, "in regex");
+  return JAST_LEXER_ADVANCE_ERROR;
 }
 
 /* Ignores cur/next/next_next and just lexes a token from the buffer. */
 static JAST_Lexer_AdvanceResult
-lexer_get_next_token_raw (JAST_Lexer *lexer, JAST_Token *token)
+_lexer_get_next_token_raw (JAST_Lexer *lexer, JAST_Token *token)
 {
   /* Skip whitespace */
   const char *at = lexer->data + lexer->offset;
@@ -260,7 +544,6 @@ lexer_get_next_token_raw (JAST_Lexer *lexer, JAST_Token *token)
       case '.':
         if (rem > 1 && '0' <= at[1] && at[1] <= '9')
           {
-            lexer->last_token_type = JAST_TOKEN_NUMBER;
             return lexer_get_next_token_raw_number(lexer, token);
           }
         else
@@ -280,10 +563,9 @@ lexer_get_next_token_raw (JAST_Lexer *lexer, JAST_Token *token)
           {
             ... multi-line comment
           }
-        else if (last_token_permits_regex_literal (lexer->last_token_type)
+        else if (last_token_permits_regex_literal (lexer->raw_last_token_type)
           && could_be_regex (at, end))
           {
-            lexer->last_token_type = JAST_TOKEN_REGEX;
             return lexer_get_token_raw_regex (lexer, token);
           }
         else
@@ -298,9 +580,12 @@ lexer_get_next_token_raw (JAST_Lexer *lexer, JAST_Token *token)
       case '\'':
         return lexer_get_next_token_raw_qstring(lexer, token);
 
+      case '`':
+        return lexer_get_next_token_raw_template_string(lexer, token);
+        
+
       case '0': case '1': case '2': case '3': case '4':
       case '5': case '6': case '7': case '8': case '9':
-        lexer->last_token_type = JAST_TOKEN_NUMBER;
         return lexer_get_next_token_raw_number(lexer, token);
 
       case '<':
@@ -334,11 +619,19 @@ lexer_get_next_token_raw (JAST_Lexer *lexer, JAST_Token *token)
         break;
 
       default:
-        lexer->last_token_type = JAST_TOKEN_BAREWORD;
         return lexer_get_next_token_raw_bareword(lexer, token);
     }
 
-  lexer->last_token_type = 
+}
+
+static inline JAST_Lexer_AdvanceResult
+lexer_get_next_token_raw (JAST_Lexer *lexer, JAST_Token *token)
+{
+  JAST_Lexer_AdvanceResult rv;
+  rv = _lexer_get_next_token_raw(lexer, token);
+  if (rv == JAST_LEXER_ADVANCE_OK)
+    lexer->raw_last_token_type = token->type;
+  return rv;
 }
 
 static JAST_Boolean
@@ -396,7 +689,7 @@ static JAST_Lexer_AdvanceResult jast_lexer_advance (JAST_Lexer *lexer)
 {
   if (!lexer->has_cur)
     {
-      lexer->error = ... read past eof
+      lexer->error = premature_eof_parse_error ("advance past EOF");
       return JAST_LEXER_ADVANCE_ERROR;
     }
   lexer->has_cur = lexer->has_next
@@ -429,7 +722,7 @@ typedef enum {
 struct MatcherVirtual
 {
   void *(*parse)(JAST_Lexer *lexer);    /* store error in lexer */
-  void (*destroy)
+  void (*destroy)(void *data);
 };
   
 
@@ -445,8 +738,7 @@ static JAST_Boolean
 match_pieces (JAST_Lexer *lexer,
               size_t      n_pieces,
               struct MatcherPiece *pieces,
-              void      **virtuals_out,
-              JAST_ParseError **error)
+              void      **virtuals_out)
 {
   size_t i;
   for (i = 0; i < n_pieces; i++)
@@ -456,11 +748,16 @@ match_pieces (JAST_Lexer *lexer,
           case MATCHER_TYPE_BY_TOKEN_TYPE:
             if (!lexer.has_cur)
               {
-                ...
+                lexer->error = premature_eof_parse_error ("matching token");
+                goto handle_error;
               }
-            if (lexer.cur.type != pieces[i].info.by_token_type)
+
+            JAST_TokenType actual_tt = lexer.cur.type;
+            JAST_TokenType expected_tt = pieces[i].info.by_token_type;
+            if (actual_tt != expected_tt)
               {
-                ..
+                lexer->error = token_mismatch_parse_error (&lexer.cur, expected_tt);
+                goto handle_error;
               }
             if (jast_lexer_advance (lexer) == JAST_LEXER_ADVANCE_ERROR)
               goto handle_error;
@@ -478,6 +775,17 @@ match_pieces (JAST_Lexer *lexer,
         }
     }
   return TRUE;
+
+handle_error:
+  unsigned vi = 0;
+  for (size_t j = 0; j < i; j++)
+    if (pieces[i].matcher_type == MATCHER_TYPE_VIRTUAL)
+      {
+        void *v = virtuals_out[vi++];
+        struct MatcherVirtual *mv = pieces[i].info.matcher_virtual;
+        mv->destroy (v);
+      }
+  return FALSE;
 }
 
 
@@ -602,9 +910,61 @@ parse_do_while_stmt (JAST_Lexer *lexer)
   return (JAST_Statement *) rv;
 }
 
+/* From 13.6.0.1.  
+for ( [lookahead ∉ {let '['}] Expressionopt ; Expressionopt ; Expressionopt ) Statement
+for ( var VariableDeclarationList ; Expressionopt ; Expressionopt ) Statement
+for ( LexicalDeclaration Expressionopt ; Expressionopt ) Statement
+for ( [lookahead ∉ {let '['}] LeftHandSideExpression in Expression ) Statement
+for ( var ForBinding in Expression ) Statement
+for ( ForDeclaration in Expression ) Statement
+for ( [lookahead ≠ let ] LeftHandSideExpression of AssignmentExpression ) Statement
+for ( var ForBinding of AssignmentExpression ) Statement
+for ( ForDeclaration of AssignmentExpression[In, ?Yield] ) Statement
+
+ForDeclaration :== LetOrConst ForBinding
+ForBinding :== BindingIdentifier | BindingPattern
+VariableDeclarationList :== VariableDeclaration | VariableDeclarationList ',' VariableDeclaration
+VariableDeclaration :== BindingIdentifier Initializeropt | BindingPattern Initializer
+LexicalDeclaration :== LetOrConst BindingList ';'
+LetOrConst :== let | const
+
+
+ */
 static JAST_Statement *
 parse_either_for_statement (JAST_Lexer *lexer)
 {
+ switch (jast_lexer_advance (lexer))
+   {
+   case JAST_LEXER_ADVANCE_OK: break;
+   case JAST_LEXER_ADVANCE_EOF:
+     lexer->error = premature_eof_parse_error ("after for");
+     return NULL;
+   case JAST_LEXER_ADVANCE_ERROR:
+     return NULL;
+   }
+ if (lexer->cur.type != JAST_TOKEN_LPAREN)
+   { 
+     lexer->error = token_mismatch_parse_error (&lexer.cur, JAST_TOKEN_LPAREN);
+     return NULL;
+   }
+ switch (jast_lexer_advance (lexer))
+   {
+   case JAST_LEXER_ADVANCE_OK: break;
+   case JAST_LEXER_ADVANCE_EOF:
+     lexer->error = premature_eof_parse_error ("after for");
+     return NULL;
+   case JAST_LEXER_ADVANCE_ERROR:
+     return NULL;
+   }
+
+ if (lexer->cur.type == JAST_TOKEN_VAR
+  || lexer->cur.type == JAST_TOKEN_LET
+  || lexer->cur.type == JAST_TOKEN_CONST)
+   {
+     /* if the next tokens are BAREWORD IN or BAREWORD OF, then 
+     ...
+     
+   }
 ...
 }
 
@@ -674,7 +1034,7 @@ parse_compound_stmt (JAST_Lexer *lexer)
     case JAST_LEXER_ADVANCE_OK:
       break;
     case JAST_LEXER_ADVANCE_EOF:
-      lexer->error = premature_eof_parse_error ();
+      lexer->error = premature_eof_parse_error ("in compound statement");
       return NULL;
     case JAST_LEXER_ADVANCE_ERROR:
       return NULL;
@@ -685,7 +1045,7 @@ parse_compound_stmt (JAST_Lexer *lexer)
   if (!lexer->has_cur)
     {
       jast_statement_free (rv);
-      lexer->error = premature_eof_parse_error ();
+      lexer->error = premature_eof_parse_error ("in compound statement");
       return NULL;
     }
   assert(lexer->cur.type == JAST_TOKEN_RBRACE);
@@ -904,7 +1264,12 @@ parse_expr(JAST_Lexer *lexer)
       if (next_piece_i == n_pieces)
         {
           /* last piece: all remaining ops must be postfix ops */
-          ...
+          if (!token_type_is_postfix_op (pieces[piece_i].op.token_type))
+            {
+              lexer->error = parse_error("non-postfix operator");
+              goto free_pieces_error;
+            }
+          pieces[piece_i].op.tag = TAG_POSTFIX;
         }
       else 
         {
@@ -920,9 +1285,25 @@ parse_expr(JAST_Lexer *lexer)
             {
               unsigned max_prefix_ops = 0;
               unsigned max_postfix_ops = 0;
-              ...
-
-              ... now look for the first infix operator that yields something parsable
+              while (max_postfix_ops < n_ops - 1
+                 && token_type_is_postfix_op (pieces[piece_i + 1 + max_postfix_ops].op.token_type))
+                max_postfix_ops;
+              while (max_prefix_ops < n_ops - 1
+                 && token_type_is_prefix_op (pieces[next_piece_i - 1 - max_prefix_ops].op.token_type))
+                max_prefix_ops;
+              if (max_prefix_ops + max_postfix_ops + 1 < n_ops)
+                {
+                  /* at pieces[piece_i+1+max_prefix_ops] */
+                  lexer->error = parse_error ("unexpected operator");
+                  goto free_pieces_error;
+                }
+              unsigned n_next_prefix_ops = max_prefix_ops;
+              unsigned n_postfix_ops = n_ops - 1 - n_next_prefix_ops;
+              for (unsigned i = 0; i < n_postfix_ops; i++)
+                pieces[piece_i + 1 + i].op.tag = TAG_POSTFIX;
+              pieces[piece_i + 1 + n_postfix_ops].op.tag = TAG_INFIX;
+              for (unsigned i = 0; i < n_next_prefix_ops; i++)
+                pieces[piece_i + 1 + n_postfix_ops + 1].op.tag = TAG_PREFIX;
             }
         }
       piece_i = next_piece_i;
@@ -983,8 +1364,7 @@ parse_expr(JAST_Lexer *lexer)
   for (size_t j = 0; j < n_pieces; j++)
     assert(pieces[j].is_op == (j % 2 == 1));
 
-  /* Now the chain should be in EXPR OP EXPR OP ... OP EXPR format.
-   * Find the lowest prec level in use,
+  /* Find the lowest prec level in use,
    * and recurse on the remaining expressions.
    * Then make binary expressions l-r or r-l 
    */
@@ -1131,4 +1511,54 @@ JAST_parse_data (size_t            data_size,
       lexer->error = NULL;
     }
   return rv;
+}
+
+/*
+LexicalBinding :== BindingIdentifier Initializeropt | BindingPattern Initializer
+BindingList :== LexicalBinding | BindingList ',' LexicalBinding
+BindingPattern :== ObjectBindingPattern | ArrayBindingPattern
+ObjectBindingPattern ::= '{' (BindingProperty ,)* '}'
+BindingProperty ::= SingleNameBinding | PropertyName ':' BindingElement
+BindingElement ::= SingleNameBinding | BindingPattern Initializer
+Initializer ::= '=' AssignmentExpression
+*/
+static JAST_Lexer_AdvanceResult
+parse_binding_pattern (JAST_Lexer *lexer, JAST_BindingPattern *out)
+{
+  if (!lexer->has_cur)
+    {
+      lexer->error = premature_eof_parse_error("parsing binding pattern");
+      return JAST_LEXER_ADVANCE_ERROR;
+    }
+  if (lexer->cur.type == JAST_TOKEN_BAREWORD)
+    {
+      ..
+    }
+  else if (lexer->cur.type == JAST_TOKEN_LBRACE)
+    {
+      ... object binding pattern
+    }
+  else if (lexer->cur.type == JAST_TOKEN_LBRACKET)
+    {
+      ... array binding pattern
+    }
+  else
+    {
+      lexer->error = unexpected_token_parse_error(&lexer->cur, "parsing variable binding");
+      return JAST_LEXER_ADVANCE_ERROR;
+    }
+  if (lexer->has_cur && lexer->cur.type == JAST_TOKEN_ASSIGN)
+    {
+      switch (jast_lexer_advance (...))
+        {
+        ...
+        }
+      out->initializer = parse_expr (lexer);
+      if (out->initializer == NULL)
+        {
+          jast_binding_pattern_clear (out);
+          return JAST_LEXER_ADVANCE_ERROR;
+        }
+    }
+  return JAST_JEXER_ADVANCE_OK;
 }
