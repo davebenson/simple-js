@@ -437,6 +437,8 @@ _lexer_get_next_token_raw (JAST_Lexer *lexer, JAST_Token *token)
   const char *at = lexer->data + lexer->offset;
   const char *end = lexer->data + lexer->data_size;
   JAST_Boolean on_new_line = lexer->token_index == 0;
+
+restart:
   while (at < end)
     {
       if (*at == ' ')
@@ -467,7 +469,7 @@ _lexer_get_next_token_raw (JAST_Lexer *lexer, JAST_Token *token)
         token->length = 2; \
         at+=2; }while(0)
 #define IMPLEMENT_SINGLE_CHARACTER_TOKEN_OR_ASSIGN(token_shortname) \
-    do{ if (rem > 1 && at[1] == '=') \
+    do{ if (at + 1 < end && at[1] == '=') \
           IMPLEMENT_TWO_CHARACTER_TOKEN(token_shortname##_ASSIGN); \
         else \
           IMPLEMENT_SINGLE_CHARACTER_TOKEN_OR_ASSIGN(token_shortname); \
@@ -555,13 +557,31 @@ _lexer_get_next_token_raw (JAST_Lexer *lexer, JAST_Token *token)
         break;
 
       case '/':
-        if (rem > 1 && at[1] == '/')
+        if (at + 1 < end && at[1] == '/')
           {
-            ... one-line comment
+            at += 2;
+            while (at < end && *at == '\n')
+              at++;
+            lexer->line_number += 1;
           }
         else if (rem > 1 && at[1] == '*')
           {
-            ... multi-line comment
+            /* multi-line comment */
+            at += 1;
+            while (at + 1 < end)
+              {
+                if (at[0] == '*' && at[1] == '/')
+                  {
+                    at += 2;
+                    lexer->offset = at - lexer->data;
+                    goto restart;
+                  }
+                else if (at[0] == '\n')
+                  lexer->line_number += 1;
+                at++;
+              }
+            lexer->error = premature_eof_parse_error("in comment");
+            return JAST_LEXER_ADVANCE_ERROR;
           }
         else if (last_token_permits_regex_literal (lexer->raw_last_token_type)
           && could_be_regex (at, end))
@@ -927,51 +947,274 @@ VariableDeclarationList :== VariableDeclaration | VariableDeclarationList ',' Va
 VariableDeclaration :== BindingIdentifier Initializeropt | BindingPattern Initializer
 LexicalDeclaration :== LetOrConst BindingList ';'
 LetOrConst :== let | const
-
-
  */
+typedef enum
+{
+  VARTYPE_NONE,
+  VARTYPE_LET,
+  VARTYPE_CONST,
+  VARTYPE_VAR,
+} Vartype;
+
 static JAST_Statement *
 parse_either_for_statement (JAST_Lexer *lexer)
 {
- switch (jast_lexer_advance (lexer))
-   {
-   case JAST_LEXER_ADVANCE_OK: break;
-   case JAST_LEXER_ADVANCE_EOF:
-     lexer->error = premature_eof_parse_error ("after for");
-     return NULL;
-   case JAST_LEXER_ADVANCE_ERROR:
-     return NULL;
-   }
- if (lexer->cur.type != JAST_TOKEN_LPAREN)
-   { 
-     lexer->error = token_mismatch_parse_error (&lexer.cur, JAST_TOKEN_LPAREN);
-     return NULL;
-   }
- switch (jast_lexer_advance (lexer))
-   {
-   case JAST_LEXER_ADVANCE_OK: break;
-   case JAST_LEXER_ADVANCE_EOF:
-     lexer->error = premature_eof_parse_error ("after for");
-     return NULL;
-   case JAST_LEXER_ADVANCE_ERROR:
-     return NULL;
-   }
+  JAST_VariableDeclaration vardecls_stack[8];
+  JAST_VariableDeclaration *vardecls = vardecls_stack;
+  size_t vardecls_alloced = 16;
+  size_t n_vardecls;
+  switch (jast_lexer_advance (lexer))
+    {
+    case JAST_LEXER_ADVANCE_OK: break;
+    case JAST_LEXER_ADVANCE_EOF:
+      lexer->error = premature_eof_parse_error ("after for");
+      return NULL;
+    case JAST_LEXER_ADVANCE_ERROR:
+      return NULL;
+    }
+  if (lexer->cur.type != JAST_TOKEN_LPAREN)
+    { 
+      lexer->error = token_mismatch_parse_error (&lexer.cur, JAST_TOKEN_LPAREN);
+      return NULL;
+    }
+  switch (jast_lexer_advance (lexer))
+    {
+    case JAST_LEXER_ADVANCE_OK: break;
+    case JAST_LEXER_ADVANCE_EOF:
+      lexer->error = premature_eof_parse_error ("after for");
+      return NULL;
+    case JAST_LEXER_ADVANCE_ERROR:
+      return NULL;
+    }
 
- if (lexer->cur.type == JAST_TOKEN_VAR
-  || lexer->cur.type == JAST_TOKEN_LET
-  || lexer->cur.type == JAST_TOKEN_CONST)
-   {
-     /* if the next tokens are BAREWORD IN or BAREWORD OF, then 
-     ...
-     
-   }
-...
+  JAST_VariableDeclarationType vartype;
+  if (lexer->cur.type == JAST_TOKEN_VAR
+   || lexer->cur.type == JAST_TOKEN_LET
+   || lexer->cur.type == JAST_TOKEN_CONST)
+    {
+      vartype = (lexer->cur.type == JAST_TOKEN_VAR) ? JAST_VARIABLE_DECLARATION_VAR
+              : (lexer->cur.type == JAST_TOKEN_LET) ? JAST_VARIABLE_DECLARATION_LET
+              : JAST_VARIABLE_DECLARATION_CONST;
+      switch (jast_lexer_advance(lexer))
+        {
+        case JAST_LEXER_ADVANCE_OK:
+          break;
+        case JAST_LEXER_ADVANCE_EOF:
+          lexer->error = premature_eof_parse_error("after var/let/const");
+          return NULL;
+        case JAST_LEXER_ADVANCE_ERROR:
+          return NULL;
+        }
+    }
+  else
+    {
+      vartype = JAST_VARIABLE_DECLARATION_NONE;
+    }
+
+  JAST_BindingPattern bp;
+  if (!parse_binding_pattern (lexer, &bp))
+    return NULL;
+
+  JAST_Boolean is_for_in;
+  JAST_Expr *container = NULL;
+  switch (lexer->cur.type)
+    {
+    case JAST_TOKEN_OF:
+      is_for_in = FALSE;
+      goto for_in_loop;
+    case JAST_TOKEN_IN:
+      is_for_in = TRUE;
+      goto for_in_loop;
+
+    case JAST_TOKEN_EQUALS:
+      switch (jast_lexer_advance (lexer))
+        {
+        case JAST_LEXER_ADVANCE_OK:
+          break;
+        case JAST_LEXER_ADVANCE_EOF:
+          lexer->error = premature_eof_parse_error ("after '='");
+          return NULL;
+        case JAST_LEXER_ADVANCE_ERROR:
+          return NULL;
+        }
+      initializer = parse_expr (lexer);
+      if (initializer == NULL)
+        {
+          ...
+        }
+
+      if (lexer->cur.type == JAST_TOKEN_SEMICOLON)
+        {
+          ... construct init statment
+        }
+      else if (lexer->cur.type == JAST_TOKEN_COMMA)
+        {
+          ...
+        }
+      else
+        {
+          lexer->error = unexpected_token_parse_error(&lexer->cur, "after parsing variable binding");
+          return NULL;
+        }
+
+    case JAST_TOKEN_SEMICOLON:
+      ... construct init statement
+      goto cstyle_for_loop;
+
+    case JAST_TOKEN_COMMA:
+      goto cstyle_for_loop;
+    default:
+      lexer->error = unexpected_token_parse_error(&lexer->cur, "after variable declaration");
+      jast_binding_pattern_clear(&bp);
+      return 
+    }
+
+
+for_in_loop:
+/* skip in/of token */
+  switch (jast_lexer_advance(lexer))
+    {
+      case JAST_LEXER_ADVANCE_OK:
+        break;
+      case JAST_LEXER_ADVANCE_EOF:
+        jast_binding_pattern_clear(&bp);
+        lexer->error = premature_eof_parse_error("in for-of");
+        return NULL;
+      case JAST_LEXER_ADVANCE_ERROR:
+        jast_binding_pattern_clear(&bp);
+        return NULL;
+    }
+  JAST_Expr *container = parse_expr (lexer);
+  if (container == NULL)
+    {
+      jast_binding_pattern_clear (&bp);
+      return NULL;
+    }
+  if (!lexer->has_cur)
+    {
+      ...
+    }
+  if (lexer->cur.token != JAST_TOKEN_RPAREN)
+    {
+      ...
+    }
+  switch (jast_lexer_advance (lexer))
+    {
+      case JAST_LEXER_ADVANCE_OK:
+        break;
+      case JAST_LEXER_ADVANCE_EOF:
+        lexer->error = premature_eof_parse_error("for-in body");
+        jast_binding_pattern_clear(&bp);
+        jast_expr_unref(container);
+        return NULL;
+      case JAST_LEXER_ADVANCE_ERROR:
+        jast_binding_pattern_clear(&bp);
+        jast_expr_unref(container);
+        return NULL;
+    }
+  JAST_Statement *body = parse_stmt (lexer);
+  if (body == NULL)
+    {
+      jast_binding_pattern_clear(&bp);
+      jast_expr_unref(container);
+      return NULL;
+    }
+  JAST_Statement_ForIn *loop = alloc_statement(JAST_STATEMENT_FOR_IN, sizeof (JAST_Statement_ForIn));
+  loop->binding = bp;
+  loop->is_for_in = is_for_in;
+  loop->container = container;
+  loop->body = body;
+  return loop;
+
+
+cstyle_for_loop:
+  n_vardecls = 1;
+  vardecls[0].binding = bp;
+  vardecls[0].initializer = initializer;
+  while (lexer->cur.type == JAST_TOKEN_COMMA)
+    {
+      // parse binding pattern
+      ...
+
+      // parse optional initializer
+      ...
+
+      // advance lexer
+      ...
+    }
+  if (lexer->cur.type != JAST_TOKEN_SEMICOLON)
+    {
+      lexer->error = ...
+      return NULL;
+    }
+  JAST_Statement_VariableDeclarations *initial = ...;
+  if (lexer->cur.type == JAST_TOKEN_SEMICOLON)
+    {
+      /* empty conditional */
+      conditional = NULL;
+    }
+  else
+    {
+      conditional = parse_expr (lexer);
+      if (conditional == NULL)
+        {
+          ...
+        }
+    }
+
+  // update statement
+  assert(lexer->cur.type == JAST_TOKEN_SEMICOLON);
+  switch (jast_lexer_advance (lexer))
+    {
+      ...
+    }
+  if (lexer->cur.type == JAST_TOKEN_RPAREN)
+    {
+      update = NULL;
+    }
+  else
+    {
+      update = parse_stmt (lexer);
+      if (update == NULL)
+        {
+          ...
+        }
+    }
+
+  assert(lexer->cur.type == JAST_TOKEN_RPAREN);
+  body = parse_stmt (lexer);
+  if (body == NULL)
+    {
+      ...
+    }
+
+  JAST_Statement_For *rv = alloc_statement(JAST_STATEMENT_FOR, sizeof(JAST_Statement_For));
+  rv->initial = (JAST_Statement *) initial;
+  rv->condition = condition;
+  rv->advance = advance;
+  rv->body = body;
+  return rv;
 }
+
+
+static struct MatcherPiece with_pieces[] = {
+  MATCHER_PIECE_BY_TOKEN_TYPE(WITH),
+  MATCHER_PIECE_BY_TOKEN_TYPE(LPAREN),
+  MATCHER_PIECE_VIRTUAL(matcher_piece_parse_expr),
+  MATCHER_PIECE_BY_TOKEN_TYPE(RPAREN),
+  MATCHER_PIECE_VIRTUAL(matcher_piece_parse_statement),
+};
 
 static JAST_Statement *
 parse_with_statement (JAST_Lexer *lexer)
 {
-...
+  void pad[2];
+  if (!DO_STATIC_MATCHES (lexer, with_pieces, pad))
+    return NULL;
+  JAST_Statement_With *rv = alloc_statement(JAST_STATEMENT_WITH, sizeof(JAST_Statement_With));
+  rv->with_expr = pad[0];
+  rv->body = pad[1];
+  return (JAST_Statement *) rv;
 }
 
 static JAST_Statement *
@@ -1522,7 +1765,135 @@ BindingProperty ::= SingleNameBinding | PropertyName ':' BindingElement
 BindingElement ::= SingleNameBinding | BindingPattern Initializer
 Initializer ::= '=' AssignmentExpression
 */
-static JAST_Lexer_AdvanceResult
+static JAST_Boolean
+parse_object_binding_pattern(JAST_Lexer *lexer, JAST_BindingPattern *out)
+{
+  switch (jast_lexer_advance (lexer))
+    {
+    case JAST_LEXER_ADVANCE_OK:
+      break;
+    case JAST_LEXER_ADVANCE_ERROR:
+    case JAST_LEXER_ADVANCE_EOF:
+      lexer->error = premature_eof_parse_error("after left-brace in binding-pattern");
+      return FALSE;
+    }
+  JAST_FieldBindingPattern fields_stack[16];
+  JAST_FieldBindingPattern *fields = fields_stack;
+  size_t fields_alloced = 16;
+  size_t n_fields = 0;
+  while (lexer->cur.type != JAST_TOKEN_RBRACE)
+    {
+      JAST_String *key = NULL;
+      JAST_Expr *computed_key = NULL;
+      switch (debareword_token_type (lexer->cur.type))
+        {
+          case JAST_TOKEN_BAREWORD:
+            ...
+            switch (jast_lexer_advance (...))
+              {
+              case JAST_LEXER_ADVANCE_OK: break;
+              case JAST_LEXER_ADVANCE_ERROR: goto error_cleanup;
+              case JAST_LEXER_ADVANCE_EOF: goto premature_eof;
+              }
+            break;
+          case JAST_TOKEN_STRING:
+            ...
+            switch (jast_lexer_advance (...))
+              {
+              case JAST_LEXER_ADVANCE_OK: break;
+              case JAST_LEXER_ADVANCE_ERROR: goto error_cleanup;
+              case JAST_LEXER_ADVANCE_EOF: goto premature_eof;
+              }
+          case JAST_TOKEN_NUMBER:
+            ...
+            switch (jast_lexer_advance (...))
+              {
+              case JAST_LEXER_ADVANCE_OK: break;
+              case JAST_LEXER_ADVANCE_ERROR: goto error_cleanup;
+              case JAST_LEXER_ADVANCE_EOF: goto premature_eof;
+              }
+          case JAST_TOKEN_LBRACKET:
+            switch (jast_lexer_advance (...))
+              {
+              case JAST_LEXER_ADVANCE_OK: break;
+              case JAST_LEXER_ADVANCE_ERROR: goto error_cleanup;
+              case JAST_LEXER_ADVANCE_EOF: goto premature_eof;
+              }
+            computed_key = parse_expr (lexer);
+            if (computed_key == NULL)
+              {
+                ...
+              }
+            if (lexer->cur.type != JAST_TOKEN_RBRACKET)
+              {
+                ...
+              }
+            switch (jast_lexer_advance (lexer))
+              {
+              case JAST_LEXER_ADVANCE_OK: break;
+              case JAST_LEXER_ADVANCE_ERROR: goto error_cleanup;
+              case JAST_LEXER_ADVANCE_EOF: goto premature_eof;
+              }
+          default:
+            ...
+        }
+      if (lexer->cur.type == JAST_TOKEN_COLON)
+        {
+          switch (jast_lexer_advance (lexer))
+            {
+            case JAST_LEXER_ADVANCE_OK: break;
+            case JAST_LEXER_ADVANCE_ERROR: goto error_cleanup;
+            case JAST_LEXER_ADVANCE_EOF: goto premature_eof;
+            }
+          if (!parse_binding_pattern (lexer, &binding_pattern))
+            goto error_cleanup;
+        }
+      else if (key != NULL)
+        {
+          binding_pattern.type = JAST_BINDING_PATTERN_SIMPLE;
+          binding_pattern.info.simple = key;
+        }
+      else
+        {
+          lexer->error = parse_error("expected key in object-binding pattern");
+          return FALSE;
+        }
+      if (lexer->cur.type == JAST_TOKEN_COMMA)
+        {
+          switch (jast_lexer_advance (lexer))
+            {
+            case JAST_LEXER_ADVANCE_OK: break;
+            case JAST_LEXER_ADVANCE_ERROR: goto error_cleanup;
+            case JAST_LEXER_ADVANCE_EOF: goto premature_eof;
+            }
+        }
+      else if (lexer->cur.type != JAST_TOKEN_RBRACKET)
+        {
+          lexer->error = unexpected_token_parse_error(&lexer->cur, "in object-binding pattern");
+          goto error_cleanup;
+        }
+
+
+      JAST_FieldBindingPattern field = {
+        key,
+        computed_key,
+        binding_pattern
+      };
+      if (n_fields == fields_alloced)
+        {
+          ...
+        }
+      fields[n_fields++] = field;
+    }
+  out->type = JAST_BINDING_PATTERN_OBJECT;
+  out->info.object.n_fields = n_fields;
+  out->info.object.fields = alloc_array (n_fields, JAST_FieldBindingPattern);
+  memcpy (out->info.object.fields, fields, sizeof (JAST_FieldBindingPattern) * n_fields);
+  if (fields != fields_stack)
+    free (fields)
+  return TRUE;
+}
+static JAST_Boolean
 parse_binding_pattern (JAST_Lexer *lexer, JAST_BindingPattern *out)
 {
   if (!lexer->has_cur)
@@ -1536,7 +1907,7 @@ parse_binding_pattern (JAST_Lexer *lexer, JAST_BindingPattern *out)
     }
   else if (lexer->cur.type == JAST_TOKEN_LBRACE)
     {
-      ... object binding pattern
+      return parse_object_binding_pattern (lexer, out);
     }
   else if (lexer->cur.type == JAST_TOKEN_LBRACKET)
     {
@@ -1549,9 +1920,13 @@ parse_binding_pattern (JAST_Lexer *lexer, JAST_BindingPattern *out)
     }
   if (lexer->has_cur && lexer->cur.type == JAST_TOKEN_ASSIGN)
     {
-      switch (jast_lexer_advance (...))
+      switch (jast_lexer_advance (lexer))
         {
-        ...
+        case JAST_LEXER_ADVANCE_OK:
+        case JAST_LEXER_ADVANCE_ERROR:
+
+        case JAST_LEXER_ADVANCE_EOF:
+          goto premature_eof;
         }
       out->initializer = parse_expr (lexer);
       if (out->initializer == NULL)

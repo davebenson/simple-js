@@ -31,6 +31,7 @@ struct JAST_BindingPattern {
 
 struct JAST_FieldBindingPattern {
   JS_String *name;
+  JAST_Expr *computed_name;
   JAST_BindingPattern binding;
 };
 
@@ -54,8 +55,6 @@ typedef struct JAST_Compound_Statement {
   size_t n_children;
   JAST_Statement **children;
 } JAST_Base_Statement;
-
-typedef struct {
 
 struct JAST_BindingPattern {
   JAST_BindingPatternType type;
@@ -96,7 +95,7 @@ typedef struct JAST_Compound_Statement {
   JAST_Base_Statement base;
   size_t n_children;
   JAST_Statement **children;
-} JAST_Base_Statement;
+} JAST_Component_Statement;
 
 typedef struct {
   JAST_Expr *expr;
@@ -141,7 +140,8 @@ typedef struct {
 
 typedef struct {
   JAST_Statement_Base base;
-  JAST_String *variable;            /// better name for this variable?
+  JAST_BindingPattern binding;
+  JAST_Boolean is_for_in;             /* if !for_in, it's a for-of loop */
   JAST_Expr *container;
   JAST_Statement *body;
 } JAST_Statement_ForIn;
@@ -182,6 +182,31 @@ typedef struct {
   JAST_String *label;
 } JAST_Statement_Goto;
 
+typedef enum
+{
+  JAST_VARIABLE_DECLARATION_NONE,
+  JAST_VARIABLE_DECLARATION_VAR,
+  JAST_VARIABLE_DECLARATION_LET,
+  JAST_VARIABLE_DECLARATION_CONST,
+} JAST_VariableDeclarationType;
+typedef enum
+{
+  JAST_BindingPattern binding;
+  JAST_Expr *initializer;
+} JAST_VariableDeclaration;
+
+typedef struct {
+  JAST_Statement_Base base;
+  JAST_VariableDeclarationType type;
+  size_t n_vars;
+  JAST_VariableDeclaration *vars;
+} JAST_Statement_VariableDeclarations;
+
+typedef struct {
+  JAST_Statement_Base base;
+  JAST_Expr *with_expr;
+  JAST_Statement *body;
+} JAST_Statement_With
 
 union {
   JAST_StatementType type;
@@ -198,9 +223,7 @@ union {
   JAST_Statement_Throw throw_statement;
   JAST_Statement_Label label_statement;
   JAST_Statement_Expr expr_statement;
-  JAST_Statement_Let let_statement;
-  JAST_Statement_Var var_statement;
-  JAST_Statement_Const const_statement;
+  JAST_Statement_VariableDeclarations var_statement;
 } JAST_Statement;
 
 typedef struct
