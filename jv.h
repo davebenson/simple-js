@@ -27,17 +27,9 @@ typedef struct {
   double value;
 } JVValueNumber;
 
-typedef struct
-{
-  unsigned ref_count;
-  unsigned n_chars;
-  unsigned n_bytes;
-} JVString;
-#define JV_STRING_GET_UTF8(str) ((const char *) ((JVString*)(str) + 1))
-
 typedef struct {
   JVValueBase base;
-  JVString *string;
+  JS_String *string;
 } JVValueString;
 extern JVValueString jv_value_empty_string;
 
@@ -72,5 +64,3 @@ union JV {
   JVValueObject v_object;
   JVValueFunction v_function;
 };
-
-
