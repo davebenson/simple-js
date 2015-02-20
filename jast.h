@@ -1,5 +1,5 @@
-
 // Javascript Abstract Syntax Tree.
+
 typedef union JAST_Statement JAST_Statement;
 typedef union JAST_Expr JAST_Expr;
 
@@ -17,6 +17,7 @@ typedef enum {
   JAST_PARSE_ERROR_BAD_CHARACTER,
   JAST_PARSE_ERROR_BAD_TOKEN,
   JAST_PARSE_ERROR_PREMATURE_EOF,
+  JAST_PARSE_ERROR_SEMANTICS
 } JAST_ParseError_Type;
 
 typedef struct {
@@ -48,8 +49,8 @@ typedef struct JAST_Base_Statement {
 
 typedef struct JAST_Compound_Statement {
   JAST_Base_Statement base;
-  size_t n_children;
-  JAST_Statement **children;
+  size_t n_subs;
+  JAST_Statement **subs;
 } JAST_Compound_Statement;
 
 typedef struct {
@@ -179,8 +180,10 @@ union JAST_Statement {
   JAST_Label_Statement label_statement;
   JAST_Expression_Statement expr_statement;
   JAST_VariableDeclarations_Statement vardecls_statement;
+  JAST_Goto_Statement goto_statement;
 };
 
+void jast_statement_free (JAST_Statement *stmt);
 
 /* --- Expressions --- */
 typedef enum
@@ -189,7 +192,7 @@ typedef enum
   JAST_EXPR_BINARY_OP,
   JAST_EXPR_COND,
   JAST_EXPR_DOT,
-  JAST_EXPR_ARRAY_INDEX,
+  JAST_EXPR_INDEX,
   JAST_EXPR_INVOKE,
   JAST_EXPR_FUNCTION_VALUE,
   JAST_EXPR_OBJECT_VALUE,
@@ -199,6 +202,7 @@ typedef enum
   JAST_EXPR_BOOLEAN_VALUE,
   JAST_EXPR_UNDEFINED_VALUE,
   JAST_EXPR_NULL_VALUE,
+  JAST_EXPR_IDENTIFIER
 } JAST_ExprType;
 typedef struct
 {
@@ -222,7 +226,7 @@ typedef struct
   JAST_Base_Expr base;
   JAST_UnaryOp_Type op;
   JAST_Expr *sub;
-} JAST_Expr_UnaryOp;
+} JAST_UnaryOp_Expr;
 
 typedef enum
 {
@@ -236,14 +240,23 @@ typedef enum
   JAST_BINARY_OP_BITWISE_OR,
   JAST_BINARY_OP_BITWISE_AND,
   JAST_BINARY_OP_BITWISE_XOR,
+
+  JAST_BINARY_OP_ADD_ASSIGN,
+  JAST_BINARY_OP_SUBTRACT_ASSIGN,
+  JAST_BINARY_OP_MULTIPLY_ASSIGN,
+  JAST_BINARY_OP_DIVIDE_ASSIGN,
+  JAST_BINARY_OP_MOD_ASSIGN,
+  JAST_BINARY_OP_BITWISE_OR_ASSIGN,
+  JAST_BINARY_OP_BITWISE_AND_ASSIGN,
+  JAST_BINARY_OP_BITWISE_XOR_ASSIGN,
 } JAST_BinaryOp_Type;
 
 typedef struct
 {
   JAST_Base_Expr base;
-  JAST_UnaryOp_Type op;
+  JAST_BinaryOp_Type op;
   JAST_Expr *subs[2];
-} JAST_Expr_BinaryOp;
+} JAST_BinaryOp_Expr;
 
 typedef struct
 {
@@ -297,6 +310,12 @@ typedef struct
 typedef struct
 {
   JAST_Base_Expr base;
+  double value;
+} JAST_NumberValue_Expr;
+
+typedef struct
+{
+  JAST_Base_Expr base;
   unsigned n_values;
   JAST_Expr **values;
 } JAST_ArrayValue_Expr;
@@ -318,6 +337,12 @@ typedef struct
 typedef struct
 {
   JAST_Base_Expr base;
+  JS_String *symbol;
+} JAST_Identifier_Expr;
+
+typedef struct
+{
+  JAST_Base_Expr base;
   JAST_Expr *ctor;
   unsigned n_args;
   JAST_Expr **args;
@@ -325,8 +350,8 @@ typedef struct
 
 union JAST_Expr {
   JAST_ExprType type;
-  JAST_Expr_UnaryOp unary_op_expr;
-  JAST_Expr_BinaryOp binary_op_expr;
+  JAST_UnaryOp_Expr unary_op_expr;
+  JAST_BinaryOp_Expr binary_op_expr;
   JAST_Dot_Expr dot_expr;
   JAST_Index_Expr index_expr;
   JAST_Invoke_Expr invoke_expr;
@@ -336,6 +361,8 @@ union JAST_Expr {
   JAST_Assign_Expr assign_expr;
   JAST_New_Expr new_expr;
 };
+
+void jast_expr_free (JAST_Expr *expr);
 
 /* --- binding patterns - like lvalues, but for variable declarations --- */
 typedef enum
@@ -368,11 +395,11 @@ struct JAST_FieldBindingPattern {
 };
 
 
-JAST_Compound_Statement *
+JAST_Statement *
 JAST_parse_file (const char *filename,
                  JAST_ParseError **error);
 
-JAST_Compound_Statement *
+JAST_Statement *
 JAST_parse_data (size_t            data_size,
                  const char       *data,
                  const char       *filename,

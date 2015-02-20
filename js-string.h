@@ -31,7 +31,10 @@ JS_String *js_string_new_format      (const char *format,
                                       ...);
 JS_String *js_string_new_format_v    (const char *format,
                                       va_list     args);
-JS_String *js_string_join            (JS_String  *separator,
+JS_String *js_string_join_cstrings   (JS_String  *separator,
+                                      size_t      n_strs,
+                                      char      **strs);
+JS_String *js_string_join_strings    (JS_String  *separator,
                                       size_t      n_strs,
                                       char      **strs);
 JS_String *js_string_concat          (size_t      n_strs,
