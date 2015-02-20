@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* --- Stack Started Arrays --- */
 #define DEFINE_STACK_STARTED_ARRAY(type, base_name, stack_size) \
   size_t n_##base_name = 0; \
   size_t base_name##_alloced = (stack_size); \
@@ -520,12 +521,17 @@ string_literal_to_string (JAST_Lexer *lexer, const JAST_Token *token)
   return rv;
 }
 
+static JS_String *
+number_literal_to_key_string (JAST_Lexer *lexer, JAST_Token *token)
+{
+  ...
+}
+
 typedef enum {
   JAST_LEXER_ADVANCE_OK,
   JAST_LEXER_ADVANCE_EOF,
   JAST_LEXER_ADVANCE_ERROR
 } JAST_Lexer_AdvanceResult;
-
 
 static JAST_Lexer_AdvanceResult
 lexer_get_next_token_raw_bareword (JAST_Lexer *lexer, JAST_Token *token)
@@ -3485,6 +3491,7 @@ convert_reserved_word_to_bareword (JAST_TokenType tt)
   return tt;
 }
 
+
 /*
 LexicalBinding :== BindingIdentifier Initializeropt | BindingPattern Initializer
 BindingList :== LexicalBinding | BindingList ',' LexicalBinding
@@ -3511,6 +3518,7 @@ parse_object_binding_pattern(JAST_Lexer *lexer, JAST_BindingPattern *out)
     {
       JS_String *key = NULL;
       JAST_Expr *computed_key = NULL;
+      JAST_BindingPattern binding_pattern;
       switch (convert_reserved_word_to_bareword (lexer->cur.type))
         {
           case JAST_TOKEN_BAREWORD:
@@ -3531,7 +3539,7 @@ parse_object_binding_pattern(JAST_Lexer *lexer, JAST_BindingPattern *out)
               case JAST_LEXER_ADVANCE_EOF: goto premature_eof;
               }
           case JAST_TOKEN_NUMBER:
-            key = number_literal_to_key_string (&lexer->cur);
+            key = number_literal_to_key_string (lexer, &lexer->cur);
             switch (jast_lexer_advance (lexer))
               {
               case JAST_LEXER_ADVANCE_OK: break;
@@ -3551,7 +3559,7 @@ parse_object_binding_pattern(JAST_Lexer *lexer, JAST_BindingPattern *out)
               goto error_cleanup;
             if (lexer->cur.type != JAST_TOKEN_RBRACKET)
               {
-                set_expected_token_parse_error (lexer, "in quoted-string");
+                set_expected_token_parse_error (lexer, JAST_TOKEN_RBRACKET, "in computed-key");
                 jast_expr_free (computed_key);
                 goto error_cleanup;
               }
