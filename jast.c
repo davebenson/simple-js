@@ -524,7 +524,8 @@ string_literal_to_string (JAST_Lexer *lexer, const JAST_Token *token)
 static JS_String *
 number_literal_to_key_string (JAST_Lexer *lexer, JAST_Token *token)
 {
-  ...
+  double nv = strtod (lexer->data + token->offset, NULL);
+  return js_string_new_from_number (nv);
 }
 
 typedef enum {
@@ -3358,7 +3359,7 @@ jast_statement_from_expr (JAST_Expr *expr)
 }
 
 static JAST_Statement *
-jast_parse_statement (JAST_Lexer *lexer)
+parse_stmt (JAST_Lexer *lexer)
 {
   if (!lexer->has_cur)
     return NULL;
@@ -3571,7 +3572,8 @@ parse_object_binding_pattern(JAST_Lexer *lexer, JAST_BindingPattern *out)
               }
             break;
           default:
-            ... ? treat as error until we find other cases
+            set_bad_token_parse_error (lexer, &lexer->cur, "in object binding pattern");
+            goto error_cleanup;
         }
       if (lexer->cur.type == JAST_TOKEN_COLON)
         {
@@ -3591,7 +3593,7 @@ parse_object_binding_pattern(JAST_Lexer *lexer, JAST_BindingPattern *out)
         }
       else
         {
-          lexer->error = parse_error("expected key in object-binding pattern");
+          set_bad_token_parse_error(lexer, &lexer->cur, "expected key in object-binding pattern");
           return JS_FALSE;
         }
       if (lexer->cur.type == JAST_TOKEN_COMMA)
@@ -3605,7 +3607,7 @@ parse_object_binding_pattern(JAST_Lexer *lexer, JAST_BindingPattern *out)
         }
       else if (lexer->cur.type != JAST_TOKEN_RBRACKET)
         {
-          lexer->error = unexpected_token_parse_error(&lexer->cur, "in object-binding pattern");
+          set_bad_token_parse_error (lexer, &lexer->cur, "in object-binding pattern");
           goto error_cleanup;
         }
 
@@ -3618,18 +3620,22 @@ parse_object_binding_pattern(JAST_Lexer *lexer, JAST_BindingPattern *out)
     }
   out->type = JAST_BINDING_PATTERN_OBJECT;
   out->info.object.n_fields = n_fields;
-  out->info.object.fields = alloc_array (n_fields, JAST_FieldBindingPattern);
+  out->info.object.fields = malloc (n_fields * sizeof (JAST_FieldBindingPattern));
   memcpy (out->info.object.fields, fields, sizeof (JAST_FieldBindingPattern) * n_fields);
   MAYBE_CLEAR_STACK_STARTED_ARRAY(fields);
   return JS_TRUE;
 
+premature_eof:
+  set_premature_eof_parse_error (lexer, "in object binding-pattern");
+  /* fallthrough */
+
 error_cleanup:
   for (size_t k = 0; k < n_fields; k++)
     {
-      if (fields[k].key)
-        js_string_unref (fields[k].key);
-      if (fields[k].computed_key)
-        jast_expr_free (fields[k].computed_key);
+      if (fields[k].name)
+        js_string_unref (fields[k].name);
+      if (fields[k].computed_name)
+        jast_expr_free (fields[k].computed_name);
       binding_pattern_clear (&fields[k].binding);
     }
   MAYBE_CLEAR_STACK_STARTED_ARRAY(fields);
@@ -3655,7 +3661,7 @@ parse_array_binding_pattern (JAST_Lexer *lexer,
     case JAST_LEXER_ADVANCE_OK:
       break;
     case JAST_LEXER_ADVANCE_ERROR:
-      return FALSE;
+      return JS_FALSE;
     case JAST_LEXER_ADVANCE_EOF:
       set_premature_eof_parse_error (lexer, "after [ in binding-pattern");
       return JS_FALSE;
@@ -3668,7 +3674,7 @@ parse_array_binding_pattern (JAST_Lexer *lexer,
         {
           /* elided element */
           bp.type = JAST_BINDING_PATTERN_NONE;
-          APPEND_TO_STACK_STARTED_ARRAY (patterns, bp);
+          APPEND_TO_STACK_STARTED_ARRAY (JAST_BindingPattern, patterns, bp);
         }
       else
         {
@@ -3695,14 +3701,22 @@ parse_array_binding_pattern (JAST_Lexer *lexer,
             }
           else if (lexer->cur.type != JAST_TOKEN_RBRACKET)
             {
-              ...
+              set_bad_token_parse_error (lexer, &lexer->cur, "expected ] or expression or ','");
+              goto error_cleanup;
             }
         }
     }
+  out->type = JAST_BINDING_PATTERN_ARRAY;
+  out->info.array.n_subs = n_patterns;
+  size_t s = n_patterns * sizeof (JAST_BindingPattern);
+  out->info.array.subs = memcpy (malloc (s), patterns, s);
+  MAYBE_CLEAR_STACK_STARTED_ARRAY (patterns);
   return JS_TRUE;
 
 error_cleanup:
-  ...
+  for (size_t k = 0; k < n_patterns; k++)
+    binding_pattern_clear (patterns + k);
+  MAYBE_CLEAR_STACK_STARTED_ARRAY (patterns);
   return JS_FALSE;
 }
 
@@ -3730,7 +3744,7 @@ parse_binding_pattern (JAST_Lexer *lexer, JAST_BindingPattern *out)
     }
   else
     {
-      lexer->error = unexpected_token_parse_error(&lexer->cur, "parsing variable binding");
+      set_bad_token_parse_error (lexer, &lexer->cur, "parsing variable binding");
       return JS_FALSE;
     }
   if (lexer->has_cur && lexer->cur.type == JAST_TOKEN_ASSIGN)

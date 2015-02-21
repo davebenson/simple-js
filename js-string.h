@@ -25,6 +25,7 @@ struct _JS_String {
 JS_String *js_string_new_utf8        (const char *literal);
 JS_String *js_string_new_utf8_len    (size_t      length,
                                       const char *literal);
+JS_String *js_string_new_from_number (double      value);
 JS_String *js_string_ref             (JS_String  *str);
 void       js_string_unref           (JS_String  *str);
 JS_String *js_string_new_format      (const char *format,

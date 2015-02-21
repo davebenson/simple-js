@@ -367,6 +367,7 @@ void jast_expr_free (JAST_Expr *expr);
 /* --- binding patterns - like lvalues, but for variable declarations --- */
 typedef enum
 {
+  JAST_BINDING_PATTERN_NONE,
   JAST_BINDING_PATTERN_SIMPLE,
   JAST_BINDING_PATTERN_ARRAY,
   JAST_BINDING_PATTERN_OBJECT,
@@ -378,7 +379,7 @@ struct JAST_BindingPattern {
     JS_String *simple;
     struct {
       size_t n_subs;
-      JAST_BindingPattern **subs;    /* elements may be NULL */
+      JAST_BindingPattern *subs;    /* elements may be NULL */
     } array;
     struct {
       size_t n_fields;
