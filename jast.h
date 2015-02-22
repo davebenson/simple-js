@@ -8,6 +8,38 @@ typedef struct JAST_BindingPattern JAST_BindingPattern;
 
 #include "js-string.h"
 
+
+/* --- binding patterns - like lvalues, but for variable declarations --- */
+typedef enum
+{
+  JAST_BINDING_PATTERN_NONE,
+  JAST_BINDING_PATTERN_SIMPLE,
+  JAST_BINDING_PATTERN_ARRAY,
+  JAST_BINDING_PATTERN_OBJECT,
+} JAST_BindingPatternType;
+
+struct JAST_BindingPattern {
+  JAST_BindingPatternType type;
+  union {
+    JS_String *simple;
+    struct {
+      size_t n_subs;
+      JAST_BindingPattern *subs;
+    } array;
+    struct {
+      size_t n_fields;
+      JAST_FieldBindingPattern *fields;    /* elements may be NULL */
+    } object;
+  } info;
+  JAST_Expr *initializer;
+};
+
+struct JAST_FieldBindingPattern {
+  JS_String *name;
+  JAST_Expr *computed_name;
+  JAST_BindingPattern binding;
+};
+
 typedef struct {
   JS_String *filename;
   unsigned line_number;
@@ -25,6 +57,8 @@ typedef struct {
   JAST_Position position;
   char *message;
 } JAST_ParseError;
+char *jast_parse_error_to_string (const JAST_ParseError *error);
+void  jast_parse_error_free      (JAST_ParseError       *error);
 
 /* --- Statements --- */
 typedef enum {
@@ -83,6 +117,7 @@ typedef struct
 
 typedef struct {
   JAST_Base_Statement base;
+  JAST_Expr *expr;
   unsigned n_clauses;
   JAST_Switch_Clause *clauses;
 } JAST_Switch_Statement;
@@ -97,7 +132,7 @@ typedef struct {
 
 typedef struct {
   JAST_Base_Statement base;
-  JAST_BindingPattern *binding;
+  JAST_BindingPattern binding;
   JS_Boolean is_for_in;             /* if !for_in, it's a for-of loop */
   JAST_Expr *container;
   JAST_Statement *body;
@@ -316,6 +351,12 @@ typedef struct
 typedef struct
 {
   JAST_Base_Expr base;
+  JS_String *value;
+} JAST_StringValue_Expr;
+
+typedef struct
+{
+  JAST_Base_Expr base;
   unsigned n_values;
   JAST_Expr **values;
 } JAST_ArrayValue_Expr;
@@ -353,48 +394,20 @@ union JAST_Expr {
   JAST_UnaryOp_Expr unary_op_expr;
   JAST_BinaryOp_Expr binary_op_expr;
   JAST_Dot_Expr dot_expr;
+  JAST_Cond_Expr cond_expr;
   JAST_Index_Expr index_expr;
   JAST_Invoke_Expr invoke_expr;
   JAST_FunctionValue_Expr function_value_expr;
+  JAST_NumberValue_Expr number_value_expr;
+  JAST_StringValue_Expr string_value_expr;
   JAST_ArrayValue_Expr array_value_expr;
   JAST_ObjectValue_Expr object_value_expr;
   JAST_Assign_Expr assign_expr;
+  JAST_Identifier_Expr identifier_expr;
   JAST_New_Expr new_expr;
 };
 
 void jast_expr_free (JAST_Expr *expr);
-
-/* --- binding patterns - like lvalues, but for variable declarations --- */
-typedef enum
-{
-  JAST_BINDING_PATTERN_NONE,
-  JAST_BINDING_PATTERN_SIMPLE,
-  JAST_BINDING_PATTERN_ARRAY,
-  JAST_BINDING_PATTERN_OBJECT,
-} JAST_BindingPatternType;
-
-struct JAST_BindingPattern {
-  JAST_BindingPatternType type;
-  union {
-    JS_String *simple;
-    struct {
-      size_t n_subs;
-      JAST_BindingPattern *subs;    /* elements may be NULL */
-    } array;
-    struct {
-      size_t n_fields;
-      JAST_FieldBindingPattern *fields;    /* elements may be NULL */
-    } object;
-  } info;
-  JAST_Expr *initializer;
-};
-
-struct JAST_FieldBindingPattern {
-  JS_String *name;
-  JAST_Expr *computed_name;
-  JAST_BindingPattern binding;
-};
-
 
 JAST_Statement *
 JAST_parse_file (const char *filename,

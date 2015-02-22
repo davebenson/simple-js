@@ -332,6 +332,17 @@ set_bad_character_parse_error(JAST_Lexer *lexer,
   );
 }
 
+char *
+jast_parse_error_to_string (const JAST_ParseError *error)
+{
+  char *rv;
+  asprintf (&rv, "parse error: %s [%s:%u]",
+            error->message,
+            JS_STRING_GET_STR (error->position.filename),
+            error->position.line_number);
+  return rv;
+}
+
 static JS_String *
 bareword_token_to_string (JAST_Lexer *lexer, const JAST_Token *token)
 {
@@ -534,6 +545,7 @@ typedef enum {
   JAST_LEXER_ADVANCE_ERROR
 } JAST_Lexer_AdvanceResult;
 
+#if 0
 static JAST_Lexer_AdvanceResult
 lexer_get_next_token_raw_bareword (JAST_Lexer *lexer, JAST_Token *token)
 {
@@ -556,6 +568,7 @@ lexer_get_next_token_raw_bareword (JAST_Lexer *lexer, JAST_Token *token)
   lexer->offset = at - lexer->data;
   return JAST_LEXER_ADVANCE_OK;
 }
+#endif
 
 static JAST_Lexer_AdvanceResult
 lexer_get_next_token_raw_qstring (JAST_Lexer *lexer, JAST_Token *token)
@@ -1792,7 +1805,7 @@ for_in_loop:
       return NULL;
     }
   JAST_ForIn_Statement *loop = alloc_statement(JAST_STATEMENT_FOR_IN, sizeof (JAST_ForIn_Statement));
-  loop->binding = memcpy (malloc (sizeof (JAST_BindingPattern)), &bp, sizeof (JAST_BindingPattern));
+  loop->binding = bp;
   loop->is_for_in = is_for_in;
   loop->container = container;
   loop->body = body;
@@ -2931,6 +2944,15 @@ parse_opfree_expr (JAST_Lexer *lexer)
         return NULL;
       break;
 
+    case JAST_TOKEN_STRING:
+      {
+        JS_String *value = string_literal_to_string (lexer, &lexer->cur);
+        JAST_StringValue_Expr *rv = alloc_expr (JAST_EXPR_STRING_VALUE, sizeof (JAST_StringValue_Expr));
+        rv->value = value;
+        expr = (JAST_Expr *) rv;
+      }
+      break;
+
     case JAST_TOKEN_LPAREN:
       switch (jast_lexer_advance (lexer))
         {
@@ -2968,13 +2990,21 @@ parse_opfree_expr (JAST_Lexer *lexer)
         case JAST_LEXER_ADVANCE_EOF:
           return expr;
         }
+      break;
 
     case JAST_TOKEN_NUMBER:
       {
-        JAST_NumberValue_Expr *cne = alloc_expr (JAST_EXPR_NUMBER_VALUE,
-                                                 sizeof (JAST_NumberValue_Expr));
-        cne->value = strtod (lexer->data + lexer->cur.offset, NULL);
-        expr = (JAST_Expr *) cne;
+        char *end;
+        const char *str = lexer->data + lexer->cur.offset;
+        double value = strtod (str, &end);
+        if (end != str + lexer->cur.length)
+          {
+            set_bad_character_parse_error(lexer, end);
+            return NULL;
+          }
+        JAST_NumberValue_Expr *rv = alloc_expr (JAST_EXPR_NUMBER_VALUE, sizeof (JAST_NumberValue_Expr));
+        rv->value = value;
+        expr = (JAST_Expr *) rv;
       }
       switch (jast_lexer_advance (lexer))
         {
@@ -3350,6 +3380,86 @@ free_pieces_error:
   return NULL;
 }
 
+static inline void
+clear_expr_array (size_t N, JAST_Expr **arr)
+{
+  for (size_t i = 0; i < N; i++)
+    jast_expr_free (arr[i]);
+}
+
+void
+jast_expr_free (JAST_Expr *expr)
+{
+  switch (expr->type)
+    {
+      case JAST_EXPR_UNARY_OP:
+        jast_expr_free (expr->unary_op_expr.sub);
+        break;
+      case JAST_EXPR_BINARY_OP:
+        jast_expr_free (expr->binary_op_expr.subs[0]);
+        jast_expr_free (expr->binary_op_expr.subs[1]);
+        break;
+      case JAST_EXPR_COND:
+        clear_expr_array (expr->cond_expr.n_terms, expr->cond_expr.terms);
+        break;
+      case JAST_EXPR_DOT:
+        jast_expr_free (expr->dot_expr.container);
+        js_string_unref (expr->dot_expr.member_name);
+        break;
+      case JAST_EXPR_INDEX:
+        jast_expr_free (expr->index_expr.container);
+        jast_expr_free (expr->index_expr.index);
+        break;
+      case JAST_EXPR_INVOKE:
+        jast_expr_free (expr->invoke_expr.function);
+        clear_expr_array (expr->invoke_expr.n_args, expr->invoke_expr.args);
+        break;
+      case JAST_EXPR_FUNCTION_VALUE:
+        {
+          js_string_maybe_unref (expr->function_value_expr.opt_name);
+          size_t n_args = expr->function_value_expr.n_args;
+          JAST_FormalParam *args = expr->function_value_expr.args;
+          for (size_t i = 0; i < n_args; i++)
+            {
+              js_string_unref (args[i].name);
+            }
+          jast_statement_free (expr->function_value_expr.body);
+        }
+        break;
+      case JAST_EXPR_OBJECT_VALUE:
+        {
+          JAST_ObjectFieldValue *fields = expr->object_value_expr.fields;
+          size_t n_fields = expr->object_value_expr.n_fields;
+          for (size_t i = 0; i < n_fields; i++)
+            {
+              js_string_maybe_unref (fields[i].key);
+              if (fields[i].computed_key != NULL)
+                jast_expr_free (fields[i].computed_key);
+              jast_expr_free (fields[i].value);
+            }
+        }
+        break;
+      case JAST_EXPR_ARRAY_VALUE:
+        clear_expr_array (expr->array_value_expr.n_values, expr->array_value_expr.values);
+        break;
+      case JAST_EXPR_STRING_VALUE:
+        js_string_unref (expr->string_value_expr.value);
+        break;
+      case JAST_EXPR_NUMBER_VALUE:
+        break;
+      case JAST_EXPR_BOOLEAN_VALUE:
+        break;
+      case JAST_EXPR_UNDEFINED_VALUE:
+        break;
+      case JAST_EXPR_NULL_VALUE:
+        break;
+      case JAST_EXPR_IDENTIFIER:
+        js_string_unref (expr->identifier_expr.symbol);
+        break;
+    }
+  free (expr);
+}
+
 static JAST_Statement *
 jast_statement_from_expr (JAST_Expr *expr)
 {
@@ -3482,6 +3592,125 @@ JAST_parse_data (size_t            data_size,
       lexer.error = NULL;
     }
   return rv;
+}
+
+static inline void
+clear_statement_array (size_t N, JAST_Statement **arr)
+{
+  for (size_t i = 0; i < N; i++)
+    jast_statement_free (arr[i]);
+}
+
+
+void jast_statement_free (JAST_Statement *stmt)
+{
+  switch (stmt->type)
+    {
+      case JAST_STATEMENT_COMPOUND:
+        clear_statement_array (stmt->compound_statement.n_subs, stmt->compound_statement.subs);
+        break;
+      case JAST_STATEMENT_IF:
+        {
+          JAST_If_Statement *istmt = (JAST_If_Statement *) stmt;
+          size_t nc = istmt->n_conditional_statements;
+          JAST_ConditionalStatement_Clause *c = istmt->conditional_statements;
+          for (size_t i = 0; i < nc; i++)
+            {
+              jast_expr_free (c[i].expr);
+              jast_statement_free (c[i].statement);
+            }
+          if (istmt->else_statement)
+            jast_statement_free (istmt->else_statement);
+        }
+        break;
+      case JAST_STATEMENT_SWITCH:
+        {
+          JAST_Switch_Statement *sstmt = (JAST_Switch_Statement *) stmt;
+          jast_expr_free (sstmt->expr);
+          size_t nc = sstmt->n_clauses;
+          JAST_Switch_Clause *c = sstmt->clauses;
+          for (size_t i = 0; i < nc; i++)
+            switch (c[nc].clause_type)
+              {
+              case JAST_SWITCH_CLAUSE_CASE:
+                jast_expr_free (c[i].info.case_value);
+                break;
+              case JAST_SWITCH_CLAUSE_STATEMENT:
+                jast_statement_free (c[i].info.statement);
+                break;
+              case JAST_SWITCH_CLAUSE_DEFAULT:
+                break;
+              }
+        }
+        break;
+      case JAST_STATEMENT_FOR:
+        {
+          JAST_For_Statement *fstmt = (JAST_For_Statement *) stmt;
+          if (fstmt->initial)
+            jast_statement_free (fstmt->initial);
+          if (fstmt->condition)
+            jast_expr_free (fstmt->condition);
+          if (fstmt->advance)
+            jast_statement_free (fstmt->advance);
+          if (fstmt->body)
+            jast_statement_free (fstmt->body);
+        }
+        break;
+      case JAST_STATEMENT_FOR_IN:
+        {
+          JAST_ForIn_Statement *fstmt = (JAST_ForIn_Statement *) stmt;
+          binding_pattern_clear (&fstmt->binding);
+          jast_expr_free (fstmt->container);
+          jast_statement_free (fstmt->body);
+        }
+        break;
+      case JAST_STATEMENT_WHILE:
+        {
+          JAST_While_Statement *wstmt = (JAST_While_Statement *) stmt;
+          jast_expr_free (wstmt->condition);
+          jast_statement_free (wstmt->body);
+        }
+        break;
+      case JAST_STATEMENT_DO_WHILE:
+        {
+          JAST_DoWhile_Statement *dwstmt = (JAST_DoWhile_Statement *) stmt;
+          jast_statement_free (dwstmt->body);
+          jast_expr_free (dwstmt->condition);
+        }
+        break;
+      case JAST_STATEMENT_WITH:
+        {
+          JAST_With_Statement *wstmt = (JAST_With_Statement *) stmt;
+          jast_expr_free (wstmt->expr);
+          jast_statement_free (wstmt->body);
+        }
+        break;
+      case JAST_STATEMENT_VARIABLE_DECLARATIONS:
+        {
+          JAST_VariableDeclarations_Statement *vdstmt = (JAST_VariableDeclarations_Statement *) stmt;
+          for (size_t i = 0; i < vdstmt->n_vars; i++)
+            binding_pattern_clear (&vdstmt->vars[i]);
+        }
+        break;
+      case JAST_STATEMENT_TRY_CATCH:
+        {
+          JAST_TryCatch_Statement *tcstmt = (JAST_TryCatch_Statement *) stmt;
+          jast_statement_free (tcstmt->body);
+          js_string_unref (tcstmt->exception_var);
+          if (tcstmt->catch_body)
+            jast_statement_free (tcstmt->catch_body);
+          if (tcstmt->finally_body)
+            jast_statement_free (tcstmt->finally_body);
+        }
+        break;
+      case JAST_STATEMENT_LABEL:
+        js_string_unref (stmt->label_statement.label);
+        break;
+      case JAST_STATEMENT_EXPRESSION:
+        jast_expr_free (stmt->expr_statement.expr);
+        break;
+    }
+  free (stmt);
 }
 
 static JAST_TokenType
@@ -3770,4 +3999,44 @@ parse_binding_pattern (JAST_Lexer *lexer, JAST_BindingPattern *out)
 premature_eof:
   set_premature_eof_parse_error (lexer, "in binding pattern");
   return JS_FALSE;
+}
+
+static void            binding_pattern_clear (JAST_BindingPattern *pattern)
+{
+  switch (pattern->type)
+    {
+    case JAST_BINDING_PATTERN_NONE:
+      return;
+
+    case JAST_BINDING_PATTERN_SIMPLE:
+      js_string_unref (pattern->info.simple);
+      return;
+
+    case JAST_BINDING_PATTERN_ARRAY:
+      {
+        size_t n_subs = pattern->info.array.n_subs;
+        JAST_BindingPattern *subs = pattern->info.array.subs;
+        for (size_t i = 0; i < n_subs; i++)
+          binding_pattern_clear (subs + i);
+        free (subs);
+        return;
+      }
+
+    case JAST_BINDING_PATTERN_OBJECT:
+      {
+        size_t n_fields = pattern->info.object.n_fields;
+        JAST_FieldBindingPattern *fields = pattern->info.object.fields;
+        for (size_t i = 0; i < n_fields; i++)
+          {
+            if (fields[i].name)
+              js_string_unref (fields[i].name);
+            if (fields[i].computed_name)
+              jast_expr_free (fields[i].computed_name);
+            binding_pattern_clear (&fields[i].binding);
+          }
+        free (fields);
+        return;
+      }
+    }
+  assert (0);
 }
