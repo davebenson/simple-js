@@ -12,6 +12,18 @@ int jutf8_octal_digit_value (const char *utf8);
 int jutf8_binary_digit_value (const char *utf8);
 int jutf8_digit_value (const char *utf8);
 
+typedef enum
+{
+  JUTF8_STRLEN_RESULT_OK,
+  JUTF8_STRLEN_RESULT_BAD_ENCODING,
+  JUTF8_STRLEN_RESULT_PREMATURE_EOF,
+} JUTF8_Strlen_Result;
+
+JUTF8_Strlen_Result jutf8_strlen (size_t length, const char *text,
+                                  size_t *n_codepoints_out,
+                                  const char **optional_end_out);
+
+
 /* These functions return the length of the utf8 encoded data, in bytes.
    If jutf8_decode1 fails, it returns 0.  jutf8_encode1 will return a number 1..6. */
 static inline unsigned jutf8_decode1 (size_t utf8_len, const char *utf8, unsigned *unicode_codepoint_out);
