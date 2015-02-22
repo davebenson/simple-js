@@ -17,11 +17,11 @@ JS_String *js_string_new_utf8_len    (size_t      length,
   switch (jutf8_strlen (length, literal, &n_codepoints, &end_out))
     {
     case JUTF8_STRLEN_RESULT_BAD_ENCODING:
-      ...
+      return NULL;
     case JUTF8_STRLEN_RESULT_PREMATURE_EOF:
-      ...
+      return NULL;
     case JUTF8_STRLEN_RESULT_OK
-      ...
+      break;
     }
 
   JS_String *rv = malloc (padded_size);
