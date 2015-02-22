@@ -1,32 +1,38 @@
-#ifndef __JS_STRING_H_
-#define __JS_STRING_H_
+#include "js-string.h"
+#include "jutf8.h"
 
-#include <stddef.h>
-#include <stdarg.h>
+JS_String *js_string_new_utf8        (const char *literal)
+{
+  return js_string_new_utf8_len (strlen (literal), literal);
+}
 
-/* --- numbers --- */
-
-/* --- booleans --- */
-typedef unsigned char JS_Boolean;
-#define JS_FALSE 0
-#define JS_TRUE  1
-
-/* --- strings --- */
-typedef struct _JS_String JS_String;
-struct _JS_String {
-  unsigned ref_count;
-  unsigned hash;
-  unsigned n_bytes;
-  unsigned n_chars;
-  /* string data follows */
-};
-#define JS_STRING_GET_STR(js_string) \
-  ( (const char *) ((js_string) + 1) )
-
-
-JS_String *js_string_new_utf8        (const char *literal);
 JS_String *js_string_new_utf8_len    (size_t      length,
-                                      const char *literal);
+                                      const char *literal)
+{
+  size_t rv_size = sizeof (JS_String *) + length;
+
+  /* padded_size ensures there's 1..4 bytes of padding */
+  size_t padded_size = ((rv / 4) + 1) * 4;
+
+  switch (jutf8_strlen (length, literal, &n_codepoints, &end_out))
+    {
+    case JUTF8_STRLEN_RESULT_BAD_ENCODING:
+      ...
+    case JUTF8_STRLEN_RESULT_PREMATURE_EOF:
+      ...
+    case JUTF8_STRLEN_RESULT_OK
+      ...
+    }
+
+  JS_String *rv = malloc (padded_size);
+  rv->n_bytes = length;
+  rv->n_chars = n_codepoints;
+  memcpy (rv + 1, literal, length);
+  memset ((char*)(rv + 1) + length, padded_size - rv_size);
+  rv->hash = hash32 (...);
+  return rv;
+}
+
 JS_String *js_string_new_from_number (double      value);
 JS_String *js_string_ref             (JS_String  *str);
 void       js_string_unref           (JS_String  *str);
