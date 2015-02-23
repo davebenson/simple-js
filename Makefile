@@ -1,10 +1,10 @@
-all: jast.o tests/test-jast
+all: jast.o js-string.o jhash.o tests/test-jast
 
 clean:
 	rm -f *.o
 
-jast.o: jast.c
-	gcc -c -W -Wall jast.c
+%.o: %.c
+	gcc -c -W -Wall $<
 
-tests/test-jast: jast.o tests/test-jast.c
-	gcc -W -Wall -o tests/test-jast jast.o tests/test-jast.c
+tests/test-jast: jast.o js-string.o jhash.o tests/test-jast.c
+	gcc -W -Wall -o tests/test-jast jast.o js-string.o jhash.o tests/test-jast.c
