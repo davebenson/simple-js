@@ -1,1 +1,4 @@
+mk-scan-utf8-character-class
 *.o
+generated
+tests/test-jast

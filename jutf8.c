@@ -22,3 +22,39 @@ int jutf8_is_post_number_character (const char *utf8)
       || u == '`'
       || ('{' <= u && u <= '~');
 }
+
+JUTF8_Strlen_Result jutf8_strlen (size_t length, const char *text,
+                                  size_t *n_codepoints_out,
+                                  const char **optional_end_out)
+{
+  static const int8_t lens_8[256/8] = {
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,2,2,2,2,3,3,4,-1
+  };
+  size_t n_cp = 0;
+  const uint8_t *t = (const uint8_t *) text;
+  int l = lens_8[*t / 8];
+  while (length > 0)
+    {
+      if (l < 0)
+        {
+          if (optional_end_out)
+            *optional_end_out = (const char *) t;
+          *n_codepoints_out = n_cp;
+          return JUTF8_STRLEN_RESULT_BAD_ENCODING;
+        }
+      else if ((size_t) l > length)
+        {
+          if (optional_end_out)
+            *optional_end_out = (const char *) t;
+          *n_codepoints_out = n_cp;
+          return JUTF8_STRLEN_RESULT_PREMATURE_EOF;
+        }
+      length -= l;
+      t += l;
+      n_cp += 1;
+    }
+  if (optional_end_out)
+    *optional_end_out = (const char *) t;
+  *n_codepoints_out = n_cp;
+  return JUTF8_STRLEN_RESULT_OK;
+}
