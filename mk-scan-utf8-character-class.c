@@ -1,6 +1,59 @@
 #include <stdio.h>
 #include <assert.h>
-#include <dsk.h>
+#include <stdint.h>
+
+unsigned dsk_utf8_encode_unichar (char *outbuf,
+                                  uint32_t c)
+{
+  /* stolen from glib */
+  unsigned len = 0;    
+  int first;
+  int i;
+
+  if (c < 0x80)
+    {
+      first = 0;
+      len = 1;
+    }
+  else if (c < 0x800)
+    {
+      first = 0xc0;
+      len = 2;
+    }
+  else if (c < 0x10000)
+    {
+      first = 0xe0;
+      len = 3;
+    }
+   else if (c < 0x200000)
+    {
+      first = 0xf0;
+      len = 4;
+    }
+  else if (c < 0x4000000)
+    {
+      first = 0xf8;
+      len = 5;
+    }
+  else
+    {
+      first = 0xfc;
+      len = 6;
+    }
+
+  if (outbuf)
+    {
+      for (i = len - 1; i > 0; --i)
+	{
+	  outbuf[i] = (c & 0x3f) | 0x80;
+	  c >>= 6;
+	}
+      outbuf[0] = c | first;
+    }
+
+  return len;
+}
+
 
 struct Pair
 {
@@ -105,7 +158,7 @@ implement_accept_range (unsigned n_accepts,
 int main(int argc, char **argv)
 {
   if (argc == 1) {
-    fprintf(stderr, "usage: %s CHAR_CLASS_FILE\n\n");
+    fprintf(stderr, "usage: %s CHAR_CLASS_FILE\n\n", argv[0]);
     return 1;
   }
 
@@ -130,7 +183,6 @@ int main(int argc, char **argv)
 
       for (unsigned i = p.start; i <= p.end; i++)
         {
-          char buf[10];
           Accept *a = accepts + n_accepts++;
           a->size = dsk_utf8_encode_unichar ((char*) a->b, i);
           //for (unsigned j = 0; j < n; j++)

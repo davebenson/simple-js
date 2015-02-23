@@ -4,13 +4,14 @@ unsigned jutf8_scan_idcontinue_char (const char *utf8);
 int jutf8_is_post_number_character (const char *utf8);
 
 #include <stdint.h>
+#include <stddef.h>
 
 /* These return -1 if the character is invalid.
    Valid digit codepoint are always ASCII hence 1 byte. */
-int jutf8_hex_digit_value (const char *utf8);
-int jutf8_octal_digit_value (const char *utf8);
-int jutf8_binary_digit_value (const char *utf8);
-int jutf8_digit_value (const char *utf8);
+static inline int jutf8_hex_digit_value (const char *utf8);
+static inline int jutf8_octal_digit_value (const char *utf8);
+static inline int jutf8_binary_digit_value (const char *utf8);
+static inline int jutf8_digit_value (const char *utf8);
 
 typedef enum
 {
@@ -148,3 +149,26 @@ static inline unsigned jutf8_decode1 (size_t    buf_len,
     return 0;
 }
 
+static inline int jutf8_hex_digit_value (const char *utf8)
+{
+  char c = *utf8;
+  if ('0' <= c && c <= '9')
+    return c - '0';
+  else if ('a' <= c && c <= 'f')
+    return c - 'a' + 10;
+  else 
+    return c - 'A' + 10;
+}
+
+static inline int jutf8_octal_digit_value (const char *utf8)
+{
+  return *utf8 - '0';
+}
+static inline int jutf8_binary_digit_value (const char *utf8)
+{
+  return *utf8 - '0';
+}
+static inline int jutf8_digit_value (const char *utf8)
+{
+  return *utf8 - '0';
+}
