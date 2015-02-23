@@ -1,3 +1,4 @@
+/* Using Murmurhash3 */
 
 #include <stdint.h>
 #include <stddef.h>
