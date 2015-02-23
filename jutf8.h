@@ -51,7 +51,7 @@ static inline unsigned jutf8_encode1 (unsigned unicode_codepoint, char *utf8_out
   : (((c) - 'A') + 10) )
 
 
-static unsigned jutf8_encode1 (uint32_t c, char *outbuf)
+static inline unsigned jutf8_encode1 (uint32_t c, char *outbuf)
 {
   /* stolen from glib */
   unsigned len = 0;    
