@@ -14,7 +14,7 @@ JS_String *js_string_new_utf8        (const char *literal)
 JS_String *js_string_new_utf8_len    (size_t      length,
                                       const char *literal)
 {
-  size_t rv_size = sizeof (JS_String *) + length;
+  size_t rv_size = sizeof (JS_String) + length;
 
   /* padded_size ensures there's 1..4 bytes of padding */
   size_t padded_size = ((rv_size / 4) + 1) * 4;
@@ -32,6 +32,7 @@ JS_String *js_string_new_utf8_len    (size_t      length,
     }
 
   JS_String *rv = malloc (padded_size);
+  rv->ref_count = 1;
   rv->n_bytes = length;
   rv->n_chars = n_codepoints;
   memcpy (rv + 1, literal, length);
@@ -65,7 +66,9 @@ JS_String *js_string_ref             (JS_String  *str)
 void       js_string_unref           (JS_String  *str)
 {
   if (--(str->ref_count) == 0)
-    free (str);
+    {
+      free (str);
+    }
 }
 void       js_string_maybe_unref     (JS_String  *str)
 {
@@ -92,6 +95,7 @@ JS_String *js_string_new_format_v    (const char *format,
   size_t rv_len = sizeof (JS_String) + len;
   size_t padded_size = ((rv_len / 4) + 1) * 4;
   JS_String *rv = malloc (padded_size);
+  rv->ref_count = 1;
   rv->n_bytes = len;
   rv->n_chars = len;
   vsnprintf ((char*)(rv+1), len + 1, format, copy);

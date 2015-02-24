@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define YELL printf("at %s, line %d\n", __FILE__,__LINE__)
+
 /* --- Stack Started Arrays --- */
 #define DEFINE_STACK_STARTED_ARRAY(type, base_name, stack_size) \
   size_t n_##base_name = 0; \
@@ -208,11 +210,41 @@ static const char *jast_token_type_name (JAST_TokenType type)
   case JAST_TOKEN_COLON: return ":";
   case JAST_TOKEN_QUESTION_MARK: return "?";
   case JAST_TOKEN_DOT: return ".";
+  case JAST_TOKEN_CMP_EXACT_EQ: return "===";
+  case JAST_TOKEN_CMP_NUM_EQ: return "==";
+  case JAST_TOKEN_CMP_EXACT_NE: return "!==";
+  case JAST_TOKEN_CMP_NUM_NE: return "!=";
+  case JAST_TOKEN_CMP_LT: return "<";
+  case JAST_TOKEN_CMP_LE: return "<=";
+  case JAST_TOKEN_CMP_GT: return ">";
+  case JAST_TOKEN_CMP_GE: return ">=";
 
   default:
     // TODO double check by commenting this out?
     return "*unknown token*";
   }
+}
+
+static const char *jast_expr_type_name (JAST_ExprType type)
+{
+  switch (type)
+    {
+      case JAST_EXPR_UNARY_OP: return "unary-op";
+      case JAST_EXPR_BINARY_OP: return "binary-op";
+      case JAST_EXPR_COND: return "cond";
+      case JAST_EXPR_DOT: return "dot";
+      case JAST_EXPR_INDEX: return "index";
+      case JAST_EXPR_INVOKE: return "invoke";
+      case JAST_EXPR_FUNCTION_VALUE: return "function-value";
+      case JAST_EXPR_OBJECT_VALUE: return "object-value";
+      case JAST_EXPR_ARRAY_VALUE: return "array-value";
+      case JAST_EXPR_STRING_VALUE: return "string-value";
+      case JAST_EXPR_NUMBER_VALUE: return "number-value";
+      case JAST_EXPR_BOOLEAN_VALUE: return "boolean-value";
+      case JAST_EXPR_UNDEFINED_VALUE: return "undefined-value";
+      case JAST_EXPR_NULL_VALUE: return "null-value";
+      case JAST_EXPR_IDENTIFIER: return "identifier";
+    }
 }
 
 typedef struct {
@@ -255,6 +287,7 @@ new_parse_error (JAST_ParseError_Type type,
   va_start (args, format);
   vasprintf (&err, format, args);
   va_end (args);
+  printf("new_parse_error: format=%s message=%s\n",format,err);
   JAST_ParseError *rv = malloc (sizeof (JAST_ParseError));
   rv->type = type;
   rv->position = *pos;
@@ -273,6 +306,7 @@ set_parse_error (JAST_Lexer *lexer,
   va_start (args, format);
   vasprintf (&err, format, args);
   va_end (args);
+  printf("set_parse_error: format=%s message=%s\n",format,err);
   assert(lexer->error == NULL);
   lexer->error = malloc (sizeof (JAST_ParseError));
   lexer->error->type = type;
@@ -336,6 +370,7 @@ char *
 jast_parse_error_to_string (const JAST_ParseError *error)
 {
   char *rv;
+  printf("jast_parse_error_to_string: error->message=%s\n",error->message);
   asprintf (&rv, "parse error: %s [%s:%u]",
             error->message,
             JS_STRING_GET_STR (error->position.filename),
@@ -352,6 +387,7 @@ bareword_token_to_string (JAST_Lexer *lexer, const JAST_Token *token)
   assert (memchr (start, '\\', token->length) == NULL);
 
   JS_String *rv = js_string_new_utf8_len (token->length, start);
+  printf("bareword_token_to_string: %s, %s\n", start, JS_STRING_GET_STR(rv));
   return rv;
 }
 
@@ -779,6 +815,7 @@ decimal_number:
         goto bad_char;
       SKIP_WITH_PREDICATE (IS_DECIMAL_DIGIT);
     }
+  printf("n_start=%s at=%s\n",n_start,at);
   if (n_start == at)
     goto bad_char;
   goto success;
@@ -996,6 +1033,97 @@ could_be_regex (const char *str, const char *end)
   return JS_TRUE;
 }
 
+static JAST_TokenType
+compute_bareword_token_type (size_t len, const char *bw)
+{
+  switch (len)
+    {
+    case 2:
+      switch (*bw)
+        {
+        case 'i':
+          if (bw[1] == 'f') return JAST_TOKEN_IF;
+          if (bw[1] == 'n') return JAST_TOKEN_IN;
+          return JAST_TOKEN_BAREWORD;
+        case 'o':
+          if (bw[1] == 'f') return JAST_TOKEN_OF;
+          if (bw[1] == 'n') return JAST_TOKEN_ON;
+          return JAST_TOKEN_BAREWORD;
+        case 'd':
+          if (bw[1] == 'o') return JAST_TOKEN_DO;
+          return JAST_TOKEN_BAREWORD;
+        }
+      return JAST_TOKEN_BAREWORD;
+    case 3:
+      switch (*bw)
+        {
+        case 'f':
+          if (bw[1] == 'o' && bw[2] == 'r') return JAST_TOKEN_FOR;
+          return JAST_TOKEN_BAREWORD;
+        case 'v':
+          if (bw[1] == 'a' && bw[2] == 'r') return JAST_TOKEN_VAR;
+          return JAST_TOKEN_BAREWORD;
+        case 'l':
+          if (bw[1] == 'e' && bw[2] == 't') return JAST_TOKEN_LET;
+          return JAST_TOKEN_BAREWORD;
+        }
+      return JAST_TOKEN_BAREWORD;
+    case 4:
+      switch (*bw)
+        {
+        case 'e':
+          if (bw[1] == 'l' && bw[2] == 's' && bw[3] == 'e') return JAST_TOKEN_ELSE;
+          return JAST_TOKEN_BAREWORD;
+        case 'w':
+          if (bw[1] == 'i' && bw[2] == 't' && bw[3] == 'h') return JAST_TOKEN_WITH;
+          return JAST_TOKEN_BAREWORD;
+        case 'c':
+          if (bw[1] == 'a' && bw[2] == 's' && bw[3] == 'e') return JAST_TOKEN_CASE;
+          return JAST_TOKEN_BAREWORD;
+        case 'n':
+          if (bw[1] == 'u' && bw[2] == 'l' && bw[3] == 'l') return JAST_TOKEN_NULL;
+          return JAST_TOKEN_BAREWORD;
+        case 't':
+          if (bw[1] == 'r' && bw[2] == 'u' && bw[3] == 'e') return JAST_TOKEN_TRUE;
+          return JAST_TOKEN_BAREWORD;
+        }
+      return JAST_TOKEN_BAREWORD;
+    case 5:
+      switch (*bw)
+        {
+        case 'w':
+          if (memcmp (bw+1, "hile", 4) == 0) return JAST_TOKEN_WHILE;
+          return JAST_TOKEN_BAREWORD;
+        case 'c':
+          if (memcmp (bw+1, "onst", 4) == 0) return JAST_TOKEN_CONST;
+          return JAST_TOKEN_BAREWORD;
+        case 'f':
+          if (memcmp (bw+1, "alse", 4) == 0) return JAST_TOKEN_FALSE;
+          return JAST_TOKEN_BAREWORD;
+        }
+      return JAST_TOKEN_BAREWORD;
+
+    case 6:
+      if (memcmp (bw, "switch", 6) == 0) return JAST_TOKEN_SWITCH;
+      return JAST_TOKEN_BAREWORD;
+
+    case 7:
+      if (memcmp (bw, "default", 6) == 0) return JAST_TOKEN_DEFAULT;
+      return JAST_TOKEN_BAREWORD;
+
+    case 8:
+      if (memcmp (bw, "function", 8) == 0) return JAST_TOKEN_FUNCTION;
+      return JAST_TOKEN_BAREWORD;
+
+    case 9:
+      if (memcmp (bw, "undefined", 8) == 0) return JAST_TOKEN_UNDEFINED;
+      return JAST_TOKEN_BAREWORD;
+
+    default:
+      return JAST_TOKEN_BAREWORD;
+    }
+}
+
 /* Ignores cur/next/next_next and just lexes a token from the buffer. */
 static JAST_Lexer_AdvanceResult
 _lexer_get_next_token_raw (JAST_Lexer *lexer, JAST_Token *token)
@@ -1025,12 +1153,12 @@ restart:
     return JAST_LEXER_ADVANCE_EOF;
   token->token_index = lexer->token_index;
   token->position = lexer->position;
-  token->offset = at - lexer->data;
+  lexer->offset = token->offset = at - lexer->data;
 
 #define IMPLEMENT_N_CHARACTER_TOKEN(token_shortname, N) \
     do{ token->type = JAST_TOKEN_##token_shortname; \
         token->length = N; \
-        at += N; \
+        lexer->offset += N; \
         return JAST_LEXER_ADVANCE_OK; }while(0)
 #define IMPLEMENT_SINGLE_CHARACTER_TOKEN_OR_ASSIGN(token_shortname) \
     do{ if (at + 1 < end && at[1] == '=') \
@@ -1039,6 +1167,7 @@ restart:
           IMPLEMENT_N_CHARACTER_TOKEN(token_shortname, 1);       \
     }while(0)
 
+  printf("raw next token: *at=%c\n",*at);
   switch (*at)
     {
       case '!':
@@ -1051,15 +1180,12 @@ restart:
           }
         else
           IMPLEMENT_N_CHARACTER_TOKEN(LOGICAL_NOT, 1);
-        break;
 
       case '~':
         IMPLEMENT_N_CHARACTER_TOKEN(BITWISE_NOT, 1);
-        break;
 
       case '%':
         IMPLEMENT_SINGLE_CHARACTER_TOKEN_OR_ASSIGN(MOD);
-        break;
 
       case '+':
         if (at + 1 < end && at[1] == '+')
@@ -1072,49 +1198,39 @@ restart:
           IMPLEMENT_N_CHARACTER_TOKEN(MINUS_MINUS, 2);
         else
           IMPLEMENT_SINGLE_CHARACTER_TOKEN_OR_ASSIGN(MINUS);
-        break;
 
       case '^':
         IMPLEMENT_SINGLE_CHARACTER_TOKEN_OR_ASSIGN(BITWISE_XOR);
-        break;
 
       case '&':
         if (at + 1 < end && at[1] == '&')
           IMPLEMENT_N_CHARACTER_TOKEN(LOGICAL_AND, 2);
         else
           IMPLEMENT_SINGLE_CHARACTER_TOKEN_OR_ASSIGN(BITWISE_AND);
-        break;
 
       case '|':
         if (at + 1 < end && at[1] == '|')
           IMPLEMENT_N_CHARACTER_TOKEN(LOGICAL_OR, 2);
         else
           IMPLEMENT_SINGLE_CHARACTER_TOKEN_OR_ASSIGN(BITWISE_OR);
-        break;
 
       case '*':
         IMPLEMENT_SINGLE_CHARACTER_TOKEN_OR_ASSIGN(MULTIPLY);
-        break;
 
       case '(':
         IMPLEMENT_N_CHARACTER_TOKEN(LPAREN, 1);
-        break;
 
       case ')':
         IMPLEMENT_N_CHARACTER_TOKEN(RPAREN, 1);
-        break;
 
       case '[':
         IMPLEMENT_N_CHARACTER_TOKEN(LBRACKET, 1);
-        break;
       case ']':
         IMPLEMENT_N_CHARACTER_TOKEN(RBRACKET, 1);
-        break;
       case '{':
         if (lexer->in_template_brace_depth > 0)
           lexer->in_template_brace_depth++;
         IMPLEMENT_N_CHARACTER_TOKEN(LBRACE, 1);
-        break;
       case '}':
         if (lexer->in_template_brace_depth == 1)
           {
@@ -1126,10 +1242,10 @@ restart:
               lexer->in_template_brace_depth++;
             IMPLEMENT_N_CHARACTER_TOKEN(RBRACE, 1);
           }
-        break;
+
       case ',':
         IMPLEMENT_N_CHARACTER_TOKEN(COMMA, 1);
-        break;
+
       case '.':
         if (at + 1 < end && '0' <= at[1] && at[1] <= '9')
           {
@@ -1137,11 +1253,9 @@ restart:
           }
         else
           IMPLEMENT_N_CHARACTER_TOKEN(DOT, 1);
-        break;
 
       case ';':
         IMPLEMENT_N_CHARACTER_TOKEN(SEMICOLON, 1);
-        break;
 
       case '/':
         if (at + 1 < end && at[1] == '/')
@@ -1177,11 +1291,12 @@ restart:
           }
         else
           IMPLEMENT_SINGLE_CHARACTER_TOKEN_OR_ASSIGN(DIVIDE);
-        break;
 
       case '?':
         IMPLEMENT_N_CHARACTER_TOKEN(QUESTION_MARK, 1);
-        break;
+
+      case ':':
+        IMPLEMENT_N_CHARACTER_TOKEN(COLON, 1);
 
       case '"':
       case '\'':
@@ -1193,6 +1308,7 @@ restart:
 
       case '0': case '1': case '2': case '3': case '4':
       case '5': case '6': case '7': case '8': case '9':
+        printf("calling lexer_get_next_token_raw_number... at=%s\n",at);
         return lexer_get_next_token_raw_number(lexer, token);
 
       case '<':
@@ -1228,6 +1344,7 @@ restart:
         break;
 
       case '=':
+        printf("at=%s",at);
         if (at + 1 < end && at[1] == '=')
           {
             if (at + 2 < end && at[2] == '=')
@@ -1249,7 +1366,7 @@ restart:
       while (at < end && (l=jutf8_scan_idcontinue_char (at)) != 0)
         at += l;
       token->length = at - start;
-      token->type = JAST_TOKEN_BAREWORD;
+      token->type = compute_bareword_token_type (at - start, start);
       lexer->offset = at - lexer->data;
       return JAST_LEXER_ADVANCE_OK;
     }
@@ -1282,6 +1399,7 @@ jast_lexer_init (JAST_Lexer       *lexer,
   lexer->token_index = 0;
   lexer->position.filename = js_string_new_utf8 (filename);
   lexer->position.line_number = 1;
+  lexer->error = NULL;
   lexer->support_legacy_octal = 0;
   switch (lexer_get_next_token_raw (lexer, &lexer->cur))
     {
@@ -1855,6 +1973,9 @@ cstyle_for_loop:
     case JAST_LEXER_ADVANCE_ERROR:
       goto error_in_conditional;
     }
+
+  YELL;
+  printf("at conditional... cur.time=%s\n",jast_token_type_name(lexer->cur.type));
   JAST_Expr *conditional;
   if (lexer->cur.type == JAST_TOKEN_SEMICOLON)
     {
@@ -1868,6 +1989,8 @@ cstyle_for_loop:
         goto error_in_conditional;
     }
 
+  YELL;
+
   // update statement
   assert(lexer->cur.type == JAST_TOKEN_SEMICOLON);
   switch (jast_lexer_advance (lexer))
@@ -1880,6 +2003,7 @@ cstyle_for_loop:
     case JAST_LEXER_ADVANCE_ERROR:
       goto error_in_update;
     }
+  YELL;
 
   JAST_Statement *update;
   if (lexer->cur.type == JAST_TOKEN_RPAREN)
@@ -1902,6 +2026,7 @@ cstyle_for_loop:
           goto error_in_body;
         }
     }
+  YELL;
 
   assert(lexer->cur.type == JAST_TOKEN_RPAREN);
   switch (jast_lexer_advance (lexer))
@@ -1914,10 +2039,12 @@ cstyle_for_loop:
     case JAST_LEXER_ADVANCE_ERROR:
       goto error_in_body;
     }
+  YELL;
   body = parse_stmt (lexer);
   if (body == NULL)
     goto error_in_body;
 
+  YELL;
   JAST_For_Statement *rv = alloc_statement(JAST_STATEMENT_FOR, sizeof(JAST_For_Statement));
   rv->initial = (JAST_Statement *) initial;
   rv->condition = conditional;
@@ -2143,6 +2270,7 @@ parse_vardecl_statement (JAST_Lexer *lexer)
           set_premature_eof_parse_error (lexer, "in variable declaration");
           goto error_cleanup;
         }
+        printf("binding.simple=%s\n",JS_STRING_GET_STR(binding.info.simple));
       APPEND_TO_STACK_STARTED_ARRAY (JAST_BindingPattern, vardecls, binding);
       if (lexer->cur.type == JAST_TOKEN_SEMICOLON)
         {
@@ -2174,8 +2302,7 @@ parse_vardecl_statement (JAST_Lexer *lexer)
     case JAST_LEXER_ADVANCE_ERROR:
       goto error_cleanup;
     case JAST_LEXER_ADVANCE_EOF:
-      set_premature_eof_parse_error (lexer, "after variable declaration statement");
-      goto error_cleanup;
+      break;
     }
 
   size_t vd_size = sizeof(JAST_BindingPattern) * n_vardecls;
@@ -2198,8 +2325,10 @@ static JAST_Statement *
 parse_compound_stmt_without_braces (JAST_Lexer *lexer)
 {
   DEFINE_STACK_STARTED_ARRAY(JAST_Statement*, subs, 16);
-  while (lexer->has_cur && !lexer->cur.type == JAST_TOKEN_RBRACE)
+  printf("parse_compound_stmt_without_braces: has_cur=%d\n",lexer->has_cur);
+  while (lexer->has_cur && lexer->cur.type != JAST_TOKEN_RBRACE)
     {
+    printf("parse_compound_stmt_without_braces: statement starting with token %s\n",jast_token_type_name(lexer->cur.type));
       JAST_Statement *stmt = parse_stmt (lexer);
       if (stmt == NULL)
         goto error_cleanup;
@@ -2329,9 +2458,19 @@ create_binary_expr (JAST_Expr *a,
     case JAST_TOKEN_BITWISE_OR_ASSIGN: binop = JAST_BINARY_OP_BITWISE_OR_ASSIGN; break;
     case JAST_TOKEN_BITWISE_AND_ASSIGN: binop = JAST_BINARY_OP_BITWISE_AND_ASSIGN; break;
     case JAST_TOKEN_BITWISE_XOR_ASSIGN: binop = JAST_BINARY_OP_BITWISE_XOR_ASSIGN; break;
-    default: return NULL;
+    case JAST_TOKEN_CMP_EXACT_EQ: binop = JAST_BINARY_OP_CMP_EXACT_EQ; break;
+    case JAST_TOKEN_CMP_NUM_EQ: binop = JAST_BINARY_OP_CMP_NUM_EQ; break;
+    case JAST_TOKEN_CMP_EXACT_NE: binop = JAST_BINARY_OP_CMP_EXACT_NE; break;
+    case JAST_TOKEN_CMP_NUM_NE: binop = JAST_BINARY_OP_CMP_NUM_NE; break;
+    case JAST_TOKEN_CMP_LT: binop = JAST_BINARY_OP_CMP_LT; break;
+    case JAST_TOKEN_CMP_LE: binop = JAST_BINARY_OP_CMP_LE; break;
+    case JAST_TOKEN_CMP_GT: binop = JAST_BINARY_OP_CMP_GT; break;
+    case JAST_TOKEN_CMP_GE: binop = JAST_BINARY_OP_CMP_GE; break;
+    default:
+      assert(JS_FALSE);
+      return NULL;
     }
-  JAST_BinaryOp_Expr *rv = malloc (sizeof (JAST_BinaryOp_Expr));
+  JAST_BinaryOp_Expr *rv = alloc_expr (JAST_EXPR_BINARY_OP, sizeof (JAST_BinaryOp_Expr));
   rv->op = binop;
   rv->subs[0] = a;
   rv->subs[1] = b;
@@ -2343,6 +2482,7 @@ parse_normalized_op_chain (size_t n_pieces,
                            ExprOpChainPiece *pieces,
                            JAST_ParseError **err_out)
 {
+  printf("parse_normalized_op_chain: pieces=%p n_pieces=%u\n",pieces,(unsigned)n_pieces);
   if (n_pieces == 1)
     {
       assert(!pieces[0].is_op);
@@ -2357,6 +2497,7 @@ parse_normalized_op_chain (size_t n_pieces,
       if (prec < lowest_prec)
         lowest_prec = prec;
     }
+  printf("parse_normalized_op_chain: lowest_prec=%u\n",lowest_prec);
 
   size_t in_at = 0;
   size_t out_at = 0;
@@ -2374,6 +2515,7 @@ parse_normalized_op_chain (size_t n_pieces,
         }
       else
         {
+          printf("recursing on parse_normalized_op_chain in_at=%u subsize=%u\n",(unsigned)in_at,(unsigned)subsize);
           JAST_Expr *expr = parse_normalized_op_chain (subsize, pieces + in_at, err_out);
           if (expr == NULL)
             {
@@ -2396,6 +2538,8 @@ parse_normalized_op_chain (size_t n_pieces,
           pieces[out_at++] = pieces[in_at++];
         }
     }
+
+  n_pieces = out_at;
 
   /* Evaluate from L-to-R or R-to-L depending on associativity. */
   if (lowest_prec == JAST_PRECEDENCE_LEVEL_TERNARY)
@@ -2440,6 +2584,7 @@ parse_normalized_op_chain (size_t n_pieces,
       for (unsigned i = 2; i < n_pieces; i += 2)
         {
           JAST_TokenType op_token = pieces[i-1].info.op.token_type;
+          printf("handling left-assoc binary expr %s\n",jast_token_type_name(op_token));
           rv = create_binary_expr(rv, op_token, pieces[i].info.expr);
         }
       return rv;
@@ -2951,6 +3096,16 @@ parse_opfree_expr (JAST_Lexer *lexer)
         rv->value = value;
         expr = (JAST_Expr *) rv;
       }
+      switch (jast_lexer_advance (lexer))
+        {
+        case JAST_LEXER_ADVANCE_ERROR:
+          jast_expr_free (expr);
+          return NULL;
+        case JAST_LEXER_ADVANCE_OK:
+          break;
+        case JAST_LEXER_ADVANCE_EOF:
+          return expr;
+        }
       break;
 
     case JAST_TOKEN_LPAREN:
@@ -3025,6 +3180,16 @@ parse_opfree_expr (JAST_Lexer *lexer)
         id_expr->symbol = bw;
         expr = (JAST_Expr *) id_expr;
       }
+      switch (jast_lexer_advance (lexer))
+        {
+        case JAST_LEXER_ADVANCE_ERROR:
+          jast_expr_free (expr);
+          return NULL;
+        case JAST_LEXER_ADVANCE_OK:
+          break;
+        case JAST_LEXER_ADVANCE_EOF:
+          return expr;
+        }
       break;
 
     default:
@@ -3117,6 +3282,19 @@ parse_opfree_expr (JAST_Lexer *lexer)
           de->container = expr;
           de->member_name = bareword_token_to_string (lexer, &lexer->cur);
           expr = (JAST_Expr *) de;
+
+          switch (jast_lexer_advance (lexer))
+            {
+            case JAST_LEXER_ADVANCE_OK:
+              break;
+            case JAST_LEXER_ADVANCE_EOF:
+              set_premature_eof_parse_error (lexer, "after .");
+              jast_expr_free (expr);
+              return NULL;
+            case JAST_LEXER_ADVANCE_ERROR:
+              jast_expr_free (expr);
+              return NULL;
+            }
         }
       else
         return expr;
@@ -3194,6 +3372,7 @@ parse_expr(JAST_Lexer *lexer, ParseExprFlags flags)
   while (lexer->has_cur
       && !is_expression_terminator_token_type (lexer->cur.type, flags))
     {
+      printf("parse_expr: loop... tt=%d %s\n",lexer->cur.type,jast_token_type_name(lexer->cur.type));
       ExprOpChainPiece piece;
       JAST_PrecedenceLevel prec;
       piece.position = lexer->cur.position;
@@ -3202,28 +3381,47 @@ parse_expr(JAST_Lexer *lexer, ParseExprFlags flags)
           piece.is_op = JS_TRUE;
           piece.info.op.token_type = lexer->cur.type;
           piece.info.op.precedence = prec;
+
+          switch (jast_lexer_advance (lexer))
+            {
+            case JAST_LEXER_ADVANCE_OK:
+              break;
+            case JAST_LEXER_ADVANCE_EOF:
+              break;
+            case JAST_LEXER_ADVANCE_ERROR:
+              goto error_in_pieces_cleanup;
+            }
         }
       else
         {
           JAST_Expr *expr = parse_opfree_expr (lexer);
           if (expr == NULL)
-            {
-              piece.is_op = JS_FALSE;
-              piece.info.expr = expr;
-            }
-          else
-            {
-              // cleanup
-              for (size_t i = 0; i < n_pieces; i++)
-                if (!pieces[i].is_op)
-                  jast_expr_free (pieces[i].info.expr);
-              if (pieces != pieces_stack)
-                free (pieces);
-              return NULL;
-            }
+            goto error_in_pieces_cleanup;
+          piece.is_op = JS_FALSE;
+          piece.info.expr = expr;
         }
       APPEND_TO_STACK_STARTED_ARRAY(ExprOpChainPiece, pieces, piece);
     }
+
+  printf("parse_expr: got %u pieces\n",(unsigned)n_pieces);
+
+  if (0)
+    {
+      error_in_pieces_cleanup:
+        for (size_t i = 0; i < n_pieces; i++)
+          if (!pieces[i].is_op)
+            jast_expr_free (pieces[i].info.expr);
+        if (pieces != pieces_stack)
+          free (pieces);
+        return NULL;
+    }
+
+    for (size_t i = 0; i < n_pieces; i++)
+      if (pieces[i].is_op)
+        printf("pieces[%u] = (op) %s\n", (unsigned)i, jast_token_type_name(pieces[i].info.op.token_type));
+      else
+        printf("pieces[%u] = (expr) %s\n", (unsigned)i, jast_expr_type_name(pieces[i].info.expr->type));
+
 
   /* Handle initial prefix operators. */
   unsigned piece_i = 0;
@@ -3253,15 +3451,18 @@ parse_expr(JAST_Lexer *lexer, ParseExprFlags flags)
       if (next_piece_i == n_pieces)
         {
           /* last piece: all remaining ops must be postfix ops */
-          JAST_TokenType tt = pieces[piece_i].info.op.token_type;
-          if (!token_type_is_postfix_op (tt))
+          for (size_t rem_i = piece_i + 1; rem_i < n_pieces; rem_i++)
             {
-              set_parse_error (lexer, JAST_PARSE_ERROR_BAD_TOKEN,
-                               &lexer->position, "non-postfix operator %s",
-                               jast_token_type_name (tt));
-              goto free_pieces_error;
+              JAST_TokenType tt = pieces[rem_i].info.op.token_type;
+              if (!token_type_is_postfix_op (tt))
+                {
+                  set_parse_error (lexer, JAST_PARSE_ERROR_BAD_TOKEN,
+                                   &lexer->position, "non-postfix operator %s",
+                                   jast_token_type_name (tt));
+                  goto free_pieces_error;
+                }
+              pieces[rem_i].info.op.tag = JAST_OPERATOR_TAG_POSTFIX;
             }
-          pieces[piece_i].info.op.tag = JAST_OPERATOR_TAG_POSTFIX;
         }
       else 
         {
@@ -3306,6 +3507,7 @@ parse_expr(JAST_Lexer *lexer, ParseExprFlags flags)
   /* Reduce prefix and postfix operators. */
   unsigned out_at = 0;
   unsigned in_at = 0;
+  printf("reducing prefix/postfix ops... n_pieces=%u\n",(unsigned)n_pieces);
   while (in_at < n_pieces)
     {
       unsigned next_expr = in_at;
@@ -3321,7 +3523,7 @@ parse_expr(JAST_Lexer *lexer, ParseExprFlags flags)
       JAST_Expr *expr = pieces[next_expr].info.expr;
       size_t n_prefix_ops = 0;
       ExprOpChainPiece *p = pieces + next_expr - n_prefix_ops - 1;
-      while (in_at < next_expr - n_prefix_ops - 1
+      while (in_at + 1 < next_expr - n_prefix_ops
           && p->info.op.tag == JAST_OPERATOR_TAG_PREFIX)
         {
           JAST_TokenType tt = p->info.op.token_type;
@@ -3346,9 +3548,11 @@ parse_expr(JAST_Lexer *lexer, ParseExprFlags flags)
       pieces[out_at].is_op = JS_FALSE;
       pieces[out_at].info.expr = expr;
       out_at++;
-      in_at = next_expr + n_postfix_ops;
+      in_at = next_expr + n_postfix_ops + 1;
     }
   n_pieces = out_at;
+
+  printf("reducing pre/post-fix operators, n_pieces now %u\n",(unsigned)n_pieces);
 
   /* Assert that the new state of pieces
    * is EXPR OP EXPR OP ... OP EXPR
@@ -3538,9 +3742,26 @@ parse_stmt (JAST_Lexer *lexer)
             {
               JAST_Expr *expr = parse_expr(lexer, PARSE_EXPR_ALLOW_COMMA);
               if (expr == NULL)
-                return NULL;
+                {
+                  printf("error parsing expression stmt: %s\n",lexer->error->message);
+                  return NULL;
+                }
               else
-                return jast_statement_from_expr(expr);
+                {
+                  if (lexer->has_cur && lexer->cur.type == JAST_TOKEN_SEMICOLON)
+                    {
+                      switch (jast_lexer_advance (lexer))
+                        {
+                        case JAST_LEXER_ADVANCE_OK:
+                        case JAST_LEXER_ADVANCE_EOF:
+                          break;
+                        case JAST_LEXER_ADVANCE_ERROR:
+                          jast_expr_free (expr);
+                          return NULL;
+                        }
+                    }
+                  return jast_statement_from_expr(expr);
+                }
             }
         }
 
@@ -3952,6 +4173,8 @@ error_cleanup:
 static JS_Boolean
 parse_binding_pattern (JAST_Lexer *lexer, JAST_BindingPattern *out)
 {
+  out->initializer = NULL;
+  printf("parse_binding_pattern...\n");
   if (!lexer->has_cur)
     {
       set_premature_eof_parse_error (lexer, "parsing binding pattern");
@@ -3961,21 +4184,33 @@ parse_binding_pattern (JAST_Lexer *lexer, JAST_BindingPattern *out)
     {
       out->type = JAST_BINDING_PATTERN_SIMPLE;
       out->info.simple = bareword_token_to_string (lexer, &lexer->cur);
-      return JS_TRUE;
+      printf("simple=%s\n",JS_STRING_GET_STR(out->info.simple));
+      switch (jast_lexer_advance (lexer))
+        {
+          case JAST_LEXER_ADVANCE_OK:
+            break;
+          case JAST_LEXER_ADVANCE_EOF:
+            return JS_TRUE;
+          case JAST_LEXER_ADVANCE_ERROR:
+            return JS_FALSE;
+        }
     }
   else if (lexer->cur.type == JAST_TOKEN_LBRACE)
     {
-      return parse_object_binding_pattern (lexer, out);
+      if (!parse_object_binding_pattern (lexer, out))
+        return JS_FALSE;
     }
   else if (lexer->cur.type == JAST_TOKEN_LBRACKET)
     {
-      return parse_array_binding_pattern (lexer, out);
+      if (!parse_array_binding_pattern (lexer, out))
+        return JS_FALSE;
     }
   else
     {
       set_bad_token_parse_error (lexer, &lexer->cur, "parsing variable binding");
       return JS_FALSE;
     }
+  printf("parse_binding_pattern: pre-init simple=%s\n",JS_STRING_GET_STR(out->info.simple));
   if (lexer->has_cur && lexer->cur.type == JAST_TOKEN_ASSIGN)
     {
       switch (jast_lexer_advance (lexer))
@@ -3987,13 +4222,16 @@ parse_binding_pattern (JAST_Lexer *lexer, JAST_BindingPattern *out)
         case JAST_LEXER_ADVANCE_EOF:
           goto premature_eof;
         }
+        printf("parsing initializer.. \n");
       out->initializer = parse_expr (lexer, 0);
       if (out->initializer == NULL)
         {
           binding_pattern_clear (out);
           return JS_FALSE;
         }
+        printf("parsed initializer.. \n");
     }
+  printf("parse_binding_pattern: type=%u simple=%s\n",out->type,JS_STRING_GET_STR(out->info.simple));
   return JS_TRUE;
 
 premature_eof:
