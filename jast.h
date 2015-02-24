@@ -73,6 +73,8 @@ typedef enum {
   JAST_STATEMENT_VARIABLE_DECLARATIONS,
   JAST_STATEMENT_TRY_CATCH,
   JAST_STATEMENT_LABEL,
+  JAST_STATEMENT_BREAK,
+  JAST_STATEMENT_CONTINUE,
   JAST_STATEMENT_EXPRESSION
 } JAST_StatementType;
 
@@ -171,6 +173,14 @@ typedef struct {
 
 typedef struct {
   JAST_Base_Statement base;
+  JS_String *label;   // optional
+} JAST_Break_Statement;
+
+typedef JAST_Break_Statement JAST_Continue_Statement;
+
+
+typedef struct {
+  JAST_Base_Statement base;
   JS_String *label;
 } JAST_Label_Statement;
 
@@ -214,6 +224,8 @@ union JAST_Statement {
   JAST_Throw_Statement throw_statement;
   JAST_Label_Statement label_statement;
   JAST_Expression_Statement expr_statement;
+  JAST_Break_Statement break_statement;
+  JAST_Continue_Statement continue_statement;
   JAST_VariableDeclarations_Statement vardecls_statement;
   JAST_Goto_Statement goto_statement;
 };
@@ -239,6 +251,7 @@ typedef enum
   JAST_EXPR_NULL_VALUE,
   JAST_EXPR_IDENTIFIER
 } JAST_ExprType;
+const char *jast_expr_type_name (JAST_ExprType type);
 typedef struct
 {
   JAST_ExprType type;
@@ -276,6 +289,7 @@ typedef enum
   JAST_BINARY_OP_BITWISE_AND,
   JAST_BINARY_OP_BITWISE_XOR,
 
+  JAST_BINARY_OP_ASSIGN,
   JAST_BINARY_OP_ADD_ASSIGN,
   JAST_BINARY_OP_SUBTRACT_ASSIGN,
   JAST_BINARY_OP_MULTIPLY_ASSIGN,
