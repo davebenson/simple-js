@@ -432,6 +432,56 @@ int main()
   jast_statement_free (stmt);
   }
 
+  {
+  stmt = parse_string ("c *= b++ + --a;");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_EXPRESSION);
+  sub_ex = sub->expr_statement.expr;
+  assert(sub_ex->type == JAST_EXPR_BINARY_OP);
+  assert(sub_ex->binary_op_expr.op == JAST_BINARY_OP_MULTIPLY_ASSIGN);
+  assert_is_identifier_expr (sub_ex->binary_op_expr.subs[0], "c");
+  JAST_Expr *rhs = sub_ex->binary_op_expr.subs[1];
+  assert(rhs->type == JAST_EXPR_BINARY_OP);
+  assert(rhs->binary_op_expr.op == JAST_BINARY_OP_ADD);
+  ex = rhs->binary_op_expr.subs[0];
+  assert(ex->type == JAST_EXPR_UNARY_OP);
+  assert(ex->unary_op_expr.op == JAST_UNARY_OP_POST_INCR);
+  assert_is_identifier_expr(ex->unary_op_expr.sub, "b");
+  ex = rhs->binary_op_expr.subs[1];
+  assert(ex->type == JAST_EXPR_UNARY_OP);
+  assert(ex->unary_op_expr.op == JAST_UNARY_OP_PRE_DECR);
+  assert_is_identifier_expr(ex->unary_op_expr.sub, "a");
+  jast_statement_free (stmt);
+  }
+
+  {
+  stmt = parse_string ("c *= b++ % --a;");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_EXPRESSION);
+  sub_ex = sub->expr_statement.expr;
+  assert(sub_ex->type == JAST_EXPR_BINARY_OP);
+  assert(sub_ex->binary_op_expr.op == JAST_BINARY_OP_MULTIPLY_ASSIGN);
+  assert_is_identifier_expr (sub_ex->binary_op_expr.subs[0], "c");
+  JAST_Expr *rhs = sub_ex->binary_op_expr.subs[1];
+  assert(rhs->type == JAST_EXPR_BINARY_OP);
+  assert(rhs->binary_op_expr.op == JAST_BINARY_OP_MOD);
+  ex = rhs->binary_op_expr.subs[0];
+  assert(ex->type == JAST_EXPR_UNARY_OP);
+  assert(ex->unary_op_expr.op == JAST_UNARY_OP_POST_INCR);
+  assert_is_identifier_expr(ex->unary_op_expr.sub, "b");
+  ex = rhs->binary_op_expr.subs[1];
+  assert(ex->type == JAST_EXPR_UNARY_OP);
+  assert(ex->unary_op_expr.op == JAST_UNARY_OP_PRE_DECR);
+  assert_is_identifier_expr(ex->unary_op_expr.sub, "a");
+  jast_statement_free (stmt);
+  }
+
   // TODO: prefix/postfix parsing torture tests
   // TODO: object and array literals
   // TODO: template strings

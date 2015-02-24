@@ -3439,6 +3439,11 @@ static JAST_UnaryOp_Type token_type_to_prefix_op (JAST_TokenType tt)
     default: assert(0); return 0;
     }
 }
+static inline JS_Boolean is_op_token_infix (JAST_TokenType tt)
+{
+  return tt != JAST_TOKEN_PLUS_PLUS && tt != JAST_TOKEN_MINUS_MINUS;
+}
+
 
 static JAST_UnaryOp_Type token_type_to_postfix_op (JAST_TokenType tt)
 {
@@ -3508,14 +3513,6 @@ parse_expr(JAST_Lexer *lexer, ParseExprFlags flags)
           free (pieces);
         return NULL;
     }
-
-#if 0
-    for (size_t i = 0; i < n_pieces; i++)
-      if (pieces[i].is_op)
-        printf("pieces[%u] = (op) %s\n", (unsigned)i, jast_token_type_name(pieces[i].info.op.token_type));
-      else
-        printf("pieces[%u] = (expr) %s\n", (unsigned)i, jast_expr_type_name(pieces[i].info.expr->type));
-#endif
 
 
   /* Handle initial prefix operators. */
@@ -3587,17 +3584,41 @@ parse_expr(JAST_Lexer *lexer, ParseExprFlags flags)
                                    &lexer->position, "unexpected operator");
                   goto free_pieces_error;
                 }
-              unsigned n_next_prefix_ops = max_prefix_ops;
-              unsigned n_postfix_ops = n_ops - 1 - n_next_prefix_ops;
-              for (unsigned i = 0; i < n_postfix_ops; i++)
+              int n_next_prefix_ops, n_postfix_ops;
+              for (n_next_prefix_ops = max_prefix_ops;
+                   n_next_prefix_ops >= 0;
+                   n_next_prefix_ops--)
+                {
+                  n_postfix_ops = n_ops - 1 - n_next_prefix_ops;
+                  if (n_postfix_ops < 0 || n_postfix_ops > (int) max_postfix_ops)
+                    continue;
+                  if (!is_op_token_infix (pieces[next_piece_i - n_postfix_ops - 1].info.op.token_type))
+                    continue;
+                  break;
+                }
+              if (n_next_prefix_ops < 0)
+                {
+                  set_parse_error (lexer, JAST_PARSE_ERROR_BAD_TOKEN,
+                                   &lexer->position, "bad operator sequence");
+                  goto free_pieces_error;
+                }
+              for (int i = 0; i < n_postfix_ops; i++)
                 pieces[piece_i + 1 + i].info.op.tag = JAST_OPERATOR_TAG_POSTFIX;
               pieces[piece_i + 1 + n_postfix_ops].info.op.tag = JAST_OPERATOR_TAG_INFIX;
-              for (unsigned i = 0; i < n_next_prefix_ops; i++)
+              for (int i = 0; i < n_next_prefix_ops; i++)
                 pieces[piece_i + 1 + n_postfix_ops + 1].info.op.tag = JAST_OPERATOR_TAG_PREFIX;
             }
         }
       piece_i = next_piece_i;
     }
+
+#if 0
+    for (size_t i = 0; i < n_pieces; i++)
+      if (pieces[i].is_op)
+        printf("pieces[%u] = (op) %s tag=%u\n", (unsigned)i, jast_token_type_name(pieces[i].info.op.token_type), pieces[i].info.op.tag);
+      else
+        printf("pieces[%u] = (expr) %s\n", (unsigned)i, jast_expr_type_name(pieces[i].info.expr->type));
+#endif
 
   /* Reduce prefix and postfix operators. */
   unsigned out_at = 0;
