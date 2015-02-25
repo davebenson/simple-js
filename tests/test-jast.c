@@ -433,6 +433,55 @@ int main()
   }
 
   {
+  stmt = parse_string ("const a = { b, foo() { return 42; }, __proto__: XYZ };");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_VARIABLE_DECLARATIONS);
+  assert(sub->vardecls_statement.type == JAST_VARIABLE_DECLARATION_CONST);
+  assert(sub->vardecls_statement.n_vars == 1);
+  JAST_BindingPattern *vars = sub->vardecls_statement.vars;
+  assert(vars[0].type == JAST_BINDING_PATTERN_SIMPLE);
+  ex = vars[0].initializer;
+  assert(ex->type == JAST_EXPR_OBJECT_VALUE);
+  assert(ex->object_value_expr.n_fields == 3);
+  JAST_ObjectFieldValue *fields = ex->object_value_expr.fields;
+  assert_string_is_literal (fields[0].key, "b");
+  assert(fields[0].computed_key == NULL);
+  assert_is_identifier_expr (fields[0].value, "b");
+  assert_string_is_literal (fields[1].key, "foo");
+  assert(fields[1].computed_key == NULL);
+  assert(fields[1].value->type == JAST_EXPR_FUNCTION_VALUE);
+  assert_string_is_literal (fields[2].key, "__proto__");
+  assert(fields[2].computed_key == NULL);
+  assert_is_identifier_expr(fields[2].value, "XYZ");
+  //...
+  jast_statement_free (stmt);
+  }
+
+  {
+  stmt = parse_string ("const a = [ 42, c, { }, ];");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_VARIABLE_DECLARATIONS);
+  assert(sub->vardecls_statement.type == JAST_VARIABLE_DECLARATION_CONST);
+  assert(sub->vardecls_statement.n_vars == 1);
+  assert(sub->vardecls_statement.vars[0].type == JAST_BINDING_PATTERN_SIMPLE);
+  assert_string_is_literal(sub->vardecls_statement.vars[0].info.simple, "a");
+  assert (sub->vardecls_statement.vars[0].initializer->type == JAST_EXPR_ARRAY_VALUE);
+  JAST_ArrayValue_Expr *ave = &sub->vardecls_statement.vars[0].initializer->array_value_expr;
+  assert(ave->n_values == 3);
+  assert_is_number_value (ave->values[0], 42);
+  assert_is_identifier_expr (ave->values[1], "c");
+  assert(ave->values[2]->type == JAST_EXPR_OBJECT_VALUE);
+  assert(ave->values[2]->object_value_expr.n_fields == 0);
+  jast_statement_free (stmt);
+  }
+
+  {
   stmt = parse_string ("c *= b++ + --a;");
   assert(stmt);
   assert(stmt->type == JAST_STATEMENT_COMPOUND);
@@ -482,11 +531,182 @@ int main()
   jast_statement_free (stmt);
   }
 
-  // TODO: prefix/postfix parsing torture tests
-  // TODO: object and array literals
-  // TODO: template strings
-  // TODO: object syntax
-  // TODO: arrows
+  {
+  stmt = parse_string ("console.log(`test ${test2} of template ${templ+2} class`);");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_EXPRESSION);
+  sub_ex = sub->expr_statement.expr;
+  assert(sub_ex->type == JAST_EXPR_INVOKE);
+  assert(sub_ex->invoke_expr.n_args == 1);
+  ex = sub_ex->invoke_expr.args[0];
+  assert(ex->type == JAST_EXPR_TEMPLATE);
+  assert(ex->template_expr.n_pieces == 5);
+  assert(ex->template_expr.pieces[0].type == JAST_TEMPLATE_PIECE_STRING);
+  assert_string_is_literal(ex->template_expr.pieces[0].info.string, "test ");
+  assert(ex->template_expr.pieces[1].type == JAST_TEMPLATE_PIECE_EXPR);
+  assert_is_identifier_expr(ex->template_expr.pieces[1].info.expr, "test2");
+  assert(ex->template_expr.pieces[2].type == JAST_TEMPLATE_PIECE_STRING);
+  assert_string_is_literal(ex->template_expr.pieces[2].info.string, " of template ");
+  assert(ex->template_expr.pieces[3].type == JAST_TEMPLATE_PIECE_EXPR);
+  assert(ex->template_expr.pieces[3].info.expr->type == JAST_EXPR_BINARY_OP);
+  assert(ex->template_expr.pieces[3].info.expr->binary_op_expr.op == JAST_BINARY_OP_ADD);
+  JAST_Expr **subs = ex->template_expr.pieces[3].info.expr->binary_op_expr.subs;
+  assert_is_identifier_expr(subs[0], "templ");
+  assert_is_number_value(subs[1], 2);
+  assert(ex->template_expr.pieces[4].type == JAST_TEMPLATE_PIECE_STRING);
+  assert_string_is_literal(ex->template_expr.pieces[4].info.string, " class");
+  jast_statement_free (stmt);
+  }
+
+  {
+  stmt = parse_string ("let empty = () => {};");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_VARIABLE_DECLARATIONS);
+  assert(sub->vardecls_statement.vars[0].type == JAST_BINDING_PATTERN_SIMPLE);
+  assert_string_is_literal(sub->vardecls_statement.vars[0].info.simple, "empty");
+  sub_ex = sub->vardecls_statement.vars[0].initializer;
+  assert(sub_ex->type == JAST_EXPR_ARROW);
+  assert(sub_ex->arrow_expr.n_args == 0);
+  assert(sub_ex->arrow_expr.body->type == JAST_STATEMENT_COMPOUND);
+  assert(sub_ex->arrow_expr.body->compound_statement.n_subs == 0);
+  jast_statement_free (stmt);
+  }
+  {
+  stmt = parse_string ("let square = x => x * x;");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_VARIABLE_DECLARATIONS);
+  sub_ex = sub->vardecls_statement.vars[0].initializer;
+  assert(sub_ex->type == JAST_EXPR_ARROW);
+  assert(sub_ex->arrow_expr.n_args == 1);
+  assert_string_is_literal(sub_ex->arrow_expr.args[0], "x");
+  assert(sub_ex->arrow_expr.body->type == JAST_STATEMENT_RETURN);
+  ex = sub_ex->arrow_expr.body->return_statement.expr;
+  assert(ex->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.op == JAST_BINARY_OP_MULTIPLY);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[0], "x");
+  assert_is_identifier_expr(ex->binary_op_expr.subs[1], "x");
+  jast_statement_free (stmt);
+  }
+  {
+  stmt = parse_string ("let key_maker = val => ({key: val});");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_VARIABLE_DECLARATIONS);
+  sub_ex = sub->vardecls_statement.vars[0].initializer;
+  assert(sub_ex->type == JAST_EXPR_ARROW);
+  assert(sub_ex->arrow_expr.n_args == 1);
+  assert_string_is_literal(sub_ex->arrow_expr.args[0], "val");
+  assert(sub_ex->arrow_expr.body->type == JAST_STATEMENT_RETURN);
+  ex = sub_ex->arrow_expr.body->return_statement.expr;
+  assert(ex->type == JAST_EXPR_OBJECT_VALUE);
+  assert(ex->object_value_expr.n_fields == 1);
+  assert_string_is_literal(ex->object_value_expr.fields[0].key, "key");
+  assert_is_identifier_expr (ex->object_value_expr.fields[0].value, "val");
+  jast_statement_free(stmt);
+  }
+  {
+  stmt = parse_string ("let odds = evens.map(v => v + 1);");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_VARIABLE_DECLARATIONS);
+  sub_ex = sub->vardecls_statement.vars[0].initializer;
+  assert(sub_ex->type == JAST_EXPR_INVOKE);
+  assert(sub_ex->invoke_expr.n_args == 1);
+  ex = sub_ex->invoke_expr.args[0];
+  assert(ex->type == JAST_EXPR_ARROW);
+  assert(ex->arrow_expr.n_args == 1);
+  assert_string_is_literal(ex->arrow_expr.args[0], "v");
+  assert(ex->arrow_expr.body->type == JAST_STATEMENT_RETURN);
+  JAST_Expr *rvex = ex->arrow_expr.body->return_statement.expr;
+  assert(rvex->type == JAST_EXPR_BINARY_OP);
+  assert(rvex->binary_op_expr.op == JAST_BINARY_OP_ADD);
+  assert_is_identifier_expr(rvex->binary_op_expr.subs[0], "v");
+  assert_is_number_value(rvex->binary_op_expr.subs[1], 1);
+  jast_statement_free(stmt);
+  }
+  {
+  stmt = parse_string ("let mag = (x,y) => x*x + y*y;");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_VARIABLE_DECLARATIONS);
+  sub_ex = sub->vardecls_statement.vars[0].initializer;
+  assert(sub_ex->type == JAST_EXPR_ARROW);
+  assert(sub_ex->arrow_expr.n_args == 2);
+  assert(sub_ex->arrow_expr.body->type == JAST_STATEMENT_RETURN);
+  ex = sub_ex->arrow_expr.body->return_statement.expr;
+  assert(ex->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.op == JAST_BINARY_OP_ADD);
+  assert(ex->binary_op_expr.subs[0]->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.subs[0]->binary_op_expr.op == JAST_BINARY_OP_MULTIPLY);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[0]->binary_op_expr.subs[0], "x");
+  assert_is_identifier_expr(ex->binary_op_expr.subs[0]->binary_op_expr.subs[1], "x");
+  assert(ex->binary_op_expr.subs[1]->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.subs[1]->binary_op_expr.op == JAST_BINARY_OP_MULTIPLY);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[1]->binary_op_expr.subs[0], "y");
+  assert_is_identifier_expr(ex->binary_op_expr.subs[1]->binary_op_expr.subs[1], "y");
+  jast_statement_free (stmt);
+  }
+
+  {
+  stmt = parse_string("const r = /foo[ab]*\\//s;");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_VARIABLE_DECLARATIONS);
+  assert(sub->vardecls_statement.type == JAST_VARIABLE_DECLARATION_CONST);
+  assert(sub->vardecls_statement.n_vars == 1);
+  assert(sub->vardecls_statement.vars[0].type == JAST_BINDING_PATTERN_SIMPLE);
+  assert_string_is_literal(sub->vardecls_statement.vars[0].info.simple, "r");
+  assert(sub->vardecls_statement.vars[0].initializer->type == JAST_EXPR_REGEX_VALUE);
+  jast_statement_free (stmt);
+  }
+
+  {
+  stmt = parse_string("const r = function (literally) { return literally + 2; };");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_VARIABLE_DECLARATIONS);
+  assert(sub->vardecls_statement.type == JAST_VARIABLE_DECLARATION_CONST);
+  assert(sub->vardecls_statement.n_vars == 1);
+  assert(sub->vardecls_statement.vars[0].type == JAST_BINDING_PATTERN_SIMPLE);
+  assert_string_is_literal(sub->vardecls_statement.vars[0].info.simple, "r");
+  assert(sub->vardecls_statement.vars[0].initializer->type == JAST_EXPR_FUNCTION_VALUE);
+  JAST_FunctionValue_Expr *f = &sub->vardecls_statement.vars[0].initializer->function_value_expr;
+  assert(f->n_args == 1);
+  assert_string_is_literal(f->args[0].name, "literally");
+  assert(f->body->type == JAST_STATEMENT_COMPOUND);
+  assert(f->body->compound_statement.n_subs == 1);
+  assert(f->body->compound_statement.subs[0]->type == JAST_STATEMENT_RETURN);
+  ex = f->body->compound_statement.subs[0]->return_statement.expr;
+  assert (ex->type == JAST_EXPR_BINARY_OP);
+  assert (ex->binary_op_expr.op == JAST_BINARY_OP_ADD);
+  assert_is_identifier_expr (ex->binary_op_expr.subs[0], "literally");
+  assert_is_number_value (ex->binary_op_expr.subs[1], 2.);
+  jast_statement_free (stmt);
+  }
+  
+
+  // TODO: with statement
+  // TODO: module system
+  // TODO: generator
 
   return 0;
 }

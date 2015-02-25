@@ -1,11 +1,29 @@
 #include "jast.h"
 #include "jutf8.h"
+#include "js-regex.h"
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define YELL printf("at %s, line %d\n", __FILE__,__LINE__)
+
+static JAST_Statement * jast_statement_from_expr (JAST_Expr *expr);
+typedef enum
+{
+  PARSE_EXPR_ALLOW_COMMA = (1<<0),
+  PARSE_EXPR_ALLOW_TERNARY = (1<<1)
+} ParseExprFlags;
+
+typedef struct JAST_Lexer JAST_Lexer;
+
+
+static JAST_Expr      *parse_expr(JAST_Lexer *lexer, ParseExprFlags flags);
+static JAST_Statement *parse_stmt(JAST_Lexer *lexer);
+static JS_Boolean      parse_binding_pattern (JAST_Lexer *lexer,
+                                              JAST_BindingPattern *out);
+static void            binding_pattern_clear (JAST_BindingPattern *pattern);
+
 
 /* --- Stack Started Arrays --- */
 #define DEFINE_STACK_STARTED_ARRAY(type, base_name, stack_size) \
@@ -66,6 +84,7 @@ typedef enum
   JAST_TOKEN_CASE,
   JAST_TOKEN_DEFAULT,
   JAST_TOKEN_BREAK,
+  JAST_TOKEN_RETURN,
   JAST_TOKEN_CONTINUE,
   JAST_TOKEN_FUNCTION,
   JAST_TOKEN_VAR,
@@ -130,6 +149,7 @@ typedef enum
   JAST_TOKEN_BITWISE_AND_ASSIGN,
   JAST_TOKEN_BITWISE_OR_ASSIGN,
   JAST_TOKEN_BITWISE_XOR_ASSIGN,
+  JAST_TOKEN_ARROW,
 
   JAST_TOKEN_CMP_EXACT_EQ,
   JAST_TOKEN_CMP_NUM_EQ,
@@ -162,6 +182,7 @@ static const char *jast_token_type_name (JAST_TokenType type)
   case JAST_TOKEN_TRUE: return "true";
   case JAST_TOKEN_FALSE: return "false";
   case JAST_TOKEN_BREAK: return "break";
+  case JAST_TOKEN_RETURN: return "return";
   case JAST_TOKEN_CONTINUE: return "continue";
   case JAST_TOKEN_UNDEFINED: return "undefined";
   case JAST_TOKEN_FUNCTION: return "function";
@@ -202,6 +223,7 @@ static const char *jast_token_type_name (JAST_TokenType type)
   case JAST_TOKEN_SHIFT_LEFT_ASSIGN: return "<<=";
   case JAST_TOKEN_SHIFT_RIGHT_ASSIGN: return ">>=";
   case JAST_TOKEN_SHIFT_UNSIGNED_RIGHT_ASSIGN: return ">>>=";
+  case JAST_TOKEN_ARROW: return "=>";
   case JAST_TOKEN_LOGICAL_NOT: return "!";
   case JAST_TOKEN_BITWISE_NOT: return "~";
   case JAST_TOKEN_BITWISE_AND: return "&";
@@ -239,7 +261,7 @@ convert_reserved_word_to_bareword (JAST_TokenType tt)
 }
 
 
-const char *jast_expr_type_name (JAST_ExprType type)
+const char *jast_expr_type_name (JAST_Expr_Type type)
 {
   switch (type)
     {
@@ -250,9 +272,12 @@ const char *jast_expr_type_name (JAST_ExprType type)
       case JAST_EXPR_INDEX: return "index";
       case JAST_EXPR_INVOKE: return "invoke";
       case JAST_EXPR_FUNCTION_VALUE: return "function-value";
+      case JAST_EXPR_ARROW: return "arrow";
       case JAST_EXPR_OBJECT_VALUE: return "object-value";
       case JAST_EXPR_ARRAY_VALUE: return "array-value";
       case JAST_EXPR_STRING_VALUE: return "string-value";
+      case JAST_EXPR_REGEX_VALUE: return "regex-value";
+      case JAST_EXPR_TEMPLATE: return "template";
       case JAST_EXPR_NUMBER_VALUE: return "number-value";
       case JAST_EXPR_BOOLEAN_VALUE: return "boolean-value";
       case JAST_EXPR_UNDEFINED_VALUE: return "undefined-value";
@@ -270,7 +295,7 @@ typedef struct {
 
 /* Lexing */
 
-typedef struct {
+struct JAST_Lexer {
   size_t           data_size;
   const char      *data;
   size_t           offset;
@@ -288,8 +313,13 @@ typedef struct {
 
 
   JAST_ParseError *error;
-} JAST_Lexer;
+};
 
+void jast_parse_error_free (JAST_ParseError *error)
+{
+  free (error->message);
+  free (error);
+}
 static JAST_ParseError *
 new_parse_error (JAST_ParseError_Type type,
                  JAST_Position *pos,
@@ -530,17 +560,13 @@ has_unicode_value:
 }
 
 static JS_String *
-string_literal_to_string (JAST_Lexer *lexer, const JAST_Token *token)
+string_literal_dequote (JAST_Lexer *lexer, const JAST_Token *token,
+                        const char *string_type,
+                        const char *at, const char *end)
 {
-  /* See spec 11.8.4 */
-  assert(token->type == JAST_TOKEN_STRING);
-  const char *at = lexer->data + token->offset;
-  const char *end = lexer->data + lexer->data_size;
-  char q = *at++;
   DEFINE_STACK_STARTED_ARRAY(char, buf, 256);
 
-  assert (q == '\'' || q == '"');
-  while (at < end && *at != q)
+  while (at < end)
     {
       if (*at == '\\')
         {
@@ -554,7 +580,7 @@ string_literal_to_string (JAST_Lexer *lexer, const JAST_Token *token)
             {
               set_parse_error (lexer, JAST_PARSE_ERROR_BAD_CHARACTER,
                                &token->position,
-                               "bad backslash in quoted string");
+                               "bad backslash in %s", string_type);
               MAYBE_CLEAR_STACK_STARTED_ARRAY (buf);
               return NULL;
             }
@@ -567,15 +593,28 @@ string_literal_to_string (JAST_Lexer *lexer, const JAST_Token *token)
           at++;
         }
     }
-  if (at == end)
-    {
-      MAYBE_CLEAR_STACK_STARTED_ARRAY (buf);
-      set_premature_eof_parse_error (lexer, "in string literal");
-      return NULL;
-    }
   JS_String *rv = js_string_new_utf8_len (n_buf, buf);
   MAYBE_CLEAR_STACK_STARTED_ARRAY (buf);
   return rv;
+}
+
+static JS_String *
+string_literal_to_string (JAST_Lexer *lexer, const JAST_Token *token)
+{
+  /* See spec 11.8.4 */
+  assert(token->type == JAST_TOKEN_STRING);
+  const char *at = lexer->data + token->offset;
+  const char *end = at + token->length;
+  char q = *at++;
+
+  if (at == end)
+    {
+      set_premature_eof_parse_error (lexer, "in string literal");
+      return NULL;
+    }
+  assert (*(end-1) == q);
+  end--;
+  return string_literal_dequote (lexer, token, "string literal", at, end);
 }
 
 static JS_String *
@@ -1116,6 +1155,7 @@ compute_bareword_token_type (size_t len, const char *bw)
       return JAST_TOKEN_BAREWORD;
 
     case 6:
+      if (memcmp (bw, "return", 6) == 0) return JAST_TOKEN_RETURN;
       if (memcmp (bw, "switch", 6) == 0) return JAST_TOKEN_SWITCH;
       return JAST_TOKEN_BAREWORD;
 
@@ -1362,6 +1402,8 @@ restart:
             else
               IMPLEMENT_N_CHARACTER_TOKEN(CMP_NUM_EQ, 2);
           }
+        else if (at + 1 < end && at[1] == '>')
+          IMPLEMENT_N_CHARACTER_TOKEN(ARROW, 2);
         else
           IMPLEMENT_N_CHARACTER_TOKEN(ASSIGN, 1);
         break;
@@ -1582,19 +1624,6 @@ handle_error:
   } \
 }
 
-typedef enum
-{
-  PARSE_EXPR_ALLOW_COMMA = (1<<0),
-  PARSE_EXPR_ALLOW_TERNARY = (1<<1)
-} ParseExprFlags;
-
-
-static JAST_Expr      *parse_expr(JAST_Lexer *lexer, ParseExprFlags flags);
-static JAST_Statement *parse_stmt(JAST_Lexer *lexer);
-static JS_Boolean      parse_binding_pattern (JAST_Lexer *lexer,
-                                              JAST_BindingPattern *out);
-static void            binding_pattern_clear (JAST_BindingPattern *pattern);
-
 static JAST_Expr      *parse_expr_no_comma(JAST_Lexer *lexer)
 {
   return parse_expr (lexer, PARSE_EXPR_ALLOW_TERNARY);
@@ -1655,7 +1684,7 @@ alloc_statement (JAST_StatementType type,
 }
 
 static void *
-alloc_expr (JAST_ExprType type,
+alloc_expr (JAST_Expr_Type type,
                  size_t             alloc_size)
 {
   // TODO
@@ -1821,7 +1850,7 @@ parse_either_for_statement (JAST_Lexer *lexer)
       return NULL;
     }
 
-  JAST_VariableDeclarationType vartype;
+  JAST_VariableDeclaration_Type vartype;
   if (lexer->cur.type == JAST_TOKEN_VAR
    || lexer->cur.type == JAST_TOKEN_LET
    || lexer->cur.type == JAST_TOKEN_CONST)
@@ -2249,7 +2278,7 @@ static JAST_Statement *
 parse_vardecl_statement (JAST_Lexer *lexer)
 {
   JS_Boolean skip = JS_FALSE;
-  JAST_VariableDeclarationType vardecl_type = JAST_VARIABLE_DECLARATION_NONE;
+  JAST_VariableDeclaration_Type vardecl_type = JAST_VARIABLE_DECLARATION_NONE;
   if (lexer->cur.type == JAST_TOKEN_LET)
     {
       skip = JS_TRUE;
@@ -2337,6 +2366,57 @@ error_cleanup:
     binding_pattern_clear (&vardecls[i]);
   MAYBE_CLEAR_STACK_STARTED_ARRAY(vardecls);
   return NULL;
+}
+
+
+static JAST_Statement *
+parse_return_statement (JAST_Lexer *lexer)
+{
+  JAST_Expr *rv_expr = NULL;
+  if (lexer->has_next && lexer->next.type == JAST_TOKEN_SEMICOLON)
+    {
+      /* value-ness return (same as return undefined essentially) */
+    }
+  else
+    {
+      // advance through 'return'
+      switch (jast_lexer_advance (lexer))
+        {
+          case JAST_LEXER_ADVANCE_OK:
+          case JAST_LEXER_ADVANCE_EOF:
+            break;
+          case JAST_LEXER_ADVANCE_ERROR:
+            return NULL;
+        }
+
+      if (lexer->has_cur)
+        {
+          // parse return value
+          rv_expr = parse_expr (lexer, PARSE_EXPR_ALLOW_TERNARY|PARSE_EXPR_ALLOW_COMMA);
+        }
+            
+      if (lexer->has_cur)
+        {
+          if (lexer->cur.type != JAST_TOKEN_SEMICOLON)
+            {
+              set_expected_token_parse_error (lexer, JAST_TOKEN_SEMICOLON, "after return statement");
+              if (rv_expr)
+                jast_expr_free (rv_expr);
+              return NULL;
+            }
+          switch (jast_lexer_advance (lexer))
+            {
+              case JAST_LEXER_ADVANCE_OK:
+              case JAST_LEXER_ADVANCE_EOF:
+                break;
+              case JAST_LEXER_ADVANCE_ERROR:
+                return NULL;
+            }
+        }
+    }
+  JAST_Return_Statement *rv = alloc_statement (JAST_STATEMENT_RETURN, sizeof (JAST_Return_Statement));
+  rv->expr = rv_expr;
+  return (JAST_Statement *) rv;
 }
 
 static JAST_Statement *
@@ -2464,6 +2544,7 @@ create_binary_expr (JAST_Expr *a,
     case JAST_TOKEN_BITWISE_AND: binop = JAST_BINARY_OP_BITWISE_AND; break;
     case JAST_TOKEN_BITWISE_XOR: binop = JAST_BINARY_OP_BITWISE_XOR; break;
 
+    case JAST_TOKEN_COMMA: binop = JAST_BINARY_OP_COMMA; break;
     case JAST_TOKEN_ASSIGN: binop = JAST_BINARY_OP_ASSIGN; break;
 
     case JAST_TOKEN_PLUS_ASSIGN: binop = JAST_BINARY_OP_ADD_ASSIGN; break;
@@ -2634,6 +2715,8 @@ is_expression_terminator_token_type (JAST_TokenType type, ParseExprFlags flags)
     case JAST_TOKEN_RBRACKET:
     case JAST_TOKEN_RPAREN:
     case JAST_TOKEN_SEMICOLON:
+    case JAST_TOKEN_TEMPLATE_MIDDLE:
+    case JAST_TOKEN_TEMPLATE_TAIL:
       return JS_TRUE;
     case JAST_TOKEN_COMMA:
       return (flags & PARSE_EXPR_ALLOW_COMMA) != PARSE_EXPR_ALLOW_COMMA;
@@ -2794,6 +2877,111 @@ error_cleanup:
 }
 
 static JAST_Expr *
+parse_object_field_method_starting_at_formals (JAST_Lexer *lexer)
+{
+  DEFINE_STACK_STARTED_ARRAY (JAST_FormalParam, formals, 8);
+
+  switch (jast_lexer_advance (lexer))
+    {
+      case JAST_LEXER_ADVANCE_OK:
+        break;
+      case JAST_LEXER_ADVANCE_EOF:
+        set_premature_eof_parse_error(lexer, "in object method formal parameters");
+        goto error_cleanup;
+      case JAST_LEXER_ADVANCE_ERROR:
+        goto error_cleanup;
+   }
+
+  while (lexer->has_cur && lexer->cur.type != JAST_TOKEN_RPAREN)
+    {
+      if (lexer->cur.type != JAST_TOKEN_BAREWORD)
+        {
+          set_bad_token_parse_error (lexer, &lexer->cur, "expected formal parameter");
+          goto error_cleanup;
+        }
+      JAST_FormalParam p;
+      p.name = bareword_token_to_string (lexer, &lexer->cur);
+      APPEND_TO_STACK_STARTED_ARRAY (JAST_FormalParam, formals, p);
+
+      switch (jast_lexer_advance (lexer))
+        {
+          case JAST_LEXER_ADVANCE_OK:
+            break;
+          case JAST_LEXER_ADVANCE_EOF:
+            set_premature_eof_parse_error(lexer, "in object method formal parameters");
+            goto error_cleanup;
+          case JAST_LEXER_ADVANCE_ERROR:
+            goto error_cleanup;
+        }
+      if (lexer->cur.type == JAST_TOKEN_COMMA)
+        {
+          switch (jast_lexer_advance (lexer))
+            {
+              case JAST_LEXER_ADVANCE_OK:
+                break;
+              case JAST_LEXER_ADVANCE_EOF:
+                set_premature_eof_parse_error(lexer, "in object method formal parameters");
+                goto error_cleanup;
+              case JAST_LEXER_ADVANCE_ERROR:
+                goto error_cleanup;
+            }
+        }
+      else if (lexer->cur.type != JAST_TOKEN_RPAREN)
+        {
+          set_bad_token_parse_error (lexer, &lexer->cur, "expected , or ) after formal parameter");
+          goto error_cleanup;
+        }
+    }
+  if (!lexer->has_cur)
+    {
+      /* doesn't seem reachable... */
+      set_premature_eof_parse_error(lexer, "in object method formal parameters");
+      goto error_cleanup;
+    }
+  assert(lexer->cur.type == JAST_TOKEN_RPAREN);
+
+  switch (jast_lexer_advance (lexer))
+    {
+      case JAST_LEXER_ADVANCE_OK:
+        break;
+      case JAST_LEXER_ADVANCE_EOF:
+        set_premature_eof_parse_error(lexer, "after object method formal parameters");
+        goto error_cleanup;
+      case JAST_LEXER_ADVANCE_ERROR:
+        goto error_cleanup;
+    }
+
+  JAST_Statement *body = parse_stmt (lexer);
+  if (body == NULL)
+    goto error_cleanup;
+
+  /* Construct function expression. */
+  size_t formals_size = sizeof (JAST_FormalParam) * n_formals;
+  size_t rv_size = sizeof (JAST_FunctionValue_Expr) + formals_size;
+  JAST_FunctionValue_Expr *rv = alloc_expr (JAST_EXPR_FUNCTION_VALUE, rv_size);
+  rv->n_args = n_formals;
+  rv->args = (JAST_FormalParam *) (rv + 1);
+  memcpy (rv->args, formals, formals_size);
+  rv->body = body;
+  MAYBE_CLEAR_STACK_STARTED_ARRAY (formals);
+  return (JAST_Expr *) rv;
+
+error_cleanup:
+  for (size_t i = 0; i < n_formals; i++)
+    js_string_unref (formals[i].name);
+  MAYBE_CLEAR_STACK_STARTED_ARRAY (formals);
+  return NULL;
+}
+
+static JAST_Expr *
+make_identifier_expr (JS_String *name)
+{
+  JAST_Identifier_Expr *rv = alloc_expr (JAST_EXPR_IDENTIFIER, sizeof (JAST_Identifier_Expr));
+  rv->symbol = js_string_ref (name);
+  return (JAST_Expr *) rv;
+}
+
+static JAST_Expr *
 parse_object_literal_expr (JAST_Lexer *lexer)
 {
   switch (jast_lexer_advance (lexer))
@@ -2854,30 +3042,67 @@ parse_object_literal_expr (JAST_Lexer *lexer)
             case JAST_LEXER_ADVANCE_ERROR:
               goto error_cleanup;
           }
-      if (lexer->cur.type != JAST_TOKEN_COLON)
+      JAST_Expr *value = NULL;
+      switch (lexer->cur.type)
         {
-          set_expected_token_parse_error (lexer, JAST_TOKEN_COLON, "in object-literal");
-          goto error_cleanup;
-        }
-      switch (jast_lexer_advance (lexer))
-        {
-          case JAST_LEXER_ADVANCE_OK:
-            break;
-          case JAST_LEXER_ADVANCE_EOF:
-            set_premature_eof_parse_error (lexer, "after key: in object-literal");
-            /* fallthrough */
-          case JAST_LEXER_ADVANCE_ERROR:
-            js_string_maybe_unref (key);
-            if (computed_key)
+        case JAST_TOKEN_COLON:
+          switch (jast_lexer_advance (lexer))
+            {
+              case JAST_LEXER_ADVANCE_OK:
+                break;
+              case JAST_LEXER_ADVANCE_EOF:
+                set_premature_eof_parse_error (lexer, "after key: in object-literal");
+                /* fallthrough */
+              case JAST_LEXER_ADVANCE_ERROR:
+                js_string_maybe_unref (key);
+                if (computed_key)
+                  jast_expr_free (computed_key);
+                goto error_cleanup;
+            }
+          value = parse_expr (lexer, PARSE_EXPR_ALLOW_TERNARY);
+          if (value == NULL)
+            {
+              js_string_maybe_unref (key);
+              if (computed_key)
+                jast_expr_free (computed_key);
+              goto error_cleanup;
+            }
+          break;
+        case JAST_TOKEN_LPAREN:
+          if (key == NULL)
+            {
+              // computed key not allowed (?)
+              set_parse_error(lexer, JAST_PARSE_ERROR_SEMANTICS, &lexer->cur.position,
+                              "computed key not allowed for method definitions");
               jast_expr_free (computed_key);
-            goto error_cleanup;
-        }
-      JAST_Expr *value = parse_expr (lexer, PARSE_EXPR_ALLOW_TERNARY);
-      if (value == NULL)
-        {
-          js_string_maybe_unref (key);
-          if (computed_key)
-            jast_expr_free (computed_key);
+              goto error_cleanup;
+            }
+
+          // Method field.  Parse formal arguments.
+          value = parse_object_field_method_starting_at_formals (lexer);
+          if (value == NULL)
+            {
+              js_string_unref (key);
+              goto error_cleanup;
+            }
+          break;
+
+        case JAST_TOKEN_COMMA:
+        case JAST_TOKEN_RBRACE:
+          if (key == NULL)
+            {
+              // computed key not allowed (?)
+              set_parse_error(lexer, JAST_PARSE_ERROR_SEMANTICS, &lexer->cur.position,
+                              "computed key not allowed for simple object field definition");
+              jast_expr_free (computed_key);
+              goto error_cleanup;
+            }
+          /* bareword is short for bareword:bareword */
+          value = make_identifier_expr (key);
+          break;
+
+        default:
+          set_bad_token_parse_error (lexer, &lexer->cur,"in object-literal");
           goto error_cleanup;
         }
       JAST_ObjectFieldValue field = {
@@ -2933,6 +3158,165 @@ error_cleanup:
     }
   MAYBE_CLEAR_STACK_STARTED_ARRAY (fields);
   return NULL;
+}
+
+
+static JAST_Expr *
+parse_template_expr (JAST_Lexer *lexer)
+{
+  DEFINE_STACK_STARTED_ARRAY(JAST_TemplatePiece, pieces, 32);
+  assert(lexer->has_cur && lexer->cur.type == JAST_TOKEN_TEMPLATE_HEAD);
+  const char *meat = lexer->data + lexer->cur.offset + 1;
+  const char *end = lexer->data + lexer->cur.offset + lexer->cur.length;
+  JS_Boolean is_tail;
+  if (*(end - 1) == '`')
+    {
+      end--;
+      is_tail = JS_TRUE;
+    }
+  else if (*(end - 1) == LBRACE_CHAR && *(end - 2) == '$')
+    {
+      end -= 2;
+      is_tail = JS_FALSE;
+    }
+  else
+    {
+      // lexer should never give us a piece that doesn't end as above.
+      assert(JS_FALSE);
+    }
+  assert(meat <= end);
+  if (meat < end)
+    {
+      JS_String *s = string_literal_dequote (lexer, &lexer->cur, "template", meat, end);
+      if (!s)
+        return NULL;
+      JAST_TemplatePiece piece;
+      piece.type = JAST_TEMPLATE_PIECE_STRING;
+      piece.info.string = s;
+      APPEND_TO_STACK_STARTED_ARRAY (JAST_TemplatePiece, pieces, piece);
+    }
+  switch (jast_lexer_advance (lexer))
+    {
+    case JAST_LEXER_ADVANCE_OK:
+      break;
+    case JAST_LEXER_ADVANCE_EOF:
+      set_premature_eof_parse_error(lexer, "template");
+    case JAST_LEXER_ADVANCE_ERROR:
+      return NULL;
+    }
+  while (!is_tail)
+    {
+      JAST_Expr *expr = parse_expr (lexer, PARSE_EXPR_ALLOW_TERNARY|PARSE_EXPR_ALLOW_COMMA);
+      if (expr == NULL)
+        goto error_cleanup;
+      JAST_TemplatePiece piece;
+      piece.type = JAST_TEMPLATE_PIECE_EXPR;
+      piece.info.expr = expr;
+      APPEND_TO_STACK_STARTED_ARRAY (JAST_TemplatePiece, pieces, piece);
+
+
+      meat = lexer->data + lexer->cur.offset;
+      end = meat + lexer->cur.length;
+      if (lexer->cur.type == JAST_TOKEN_TEMPLATE_MIDDLE)
+        {
+          meat += 1;
+          end -= 2;
+        }
+      else
+        {
+          assert (lexer->cur.type == JAST_TOKEN_TEMPLATE_TAIL);
+          meat += 1;
+          end -= 1;
+          is_tail = JS_TRUE;
+        }
+      assert (meat <= end);
+      if (meat < end)
+        {
+          JS_String *s = string_literal_dequote (lexer, &lexer->cur, "template", meat, end);
+          if (!s)
+            return NULL;
+          JAST_TemplatePiece piece;
+          piece.type = JAST_TEMPLATE_PIECE_STRING;
+          piece.info.string = s;
+          APPEND_TO_STACK_STARTED_ARRAY (JAST_TemplatePiece, pieces, piece);
+        }
+      switch (jast_lexer_advance (lexer))
+        {
+          case JAST_LEXER_ADVANCE_OK:
+            break;
+          case JAST_LEXER_ADVANCE_EOF:
+            if (!is_tail)
+              {
+                set_premature_eof_parse_error(lexer, "template");
+                goto error_cleanup;
+              }
+            break;
+          case JAST_LEXER_ADVANCE_ERROR:
+            goto error_cleanup;
+        }
+    }
+
+  size_t sub_size = sizeof (JAST_TemplatePiece) * n_pieces;
+  size_t rv_size = sizeof (JAST_Template_Expr) + sub_size;
+  JAST_Template_Expr *rv = alloc_expr (JAST_EXPR_TEMPLATE, rv_size);
+  rv->n_pieces = n_pieces;
+  rv->pieces = (JAST_TemplatePiece *) (rv + 1);
+  memcpy (rv->pieces, pieces, sub_size);
+  MAYBE_CLEAR_STACK_STARTED_ARRAY (pieces);
+  return (JAST_Expr *) rv;
+
+error_cleanup:
+  for (size_t i = 0; i < n_pieces; i++)
+    switch (pieces[i].type)
+      {
+        case JAST_TEMPLATE_PIECE_STRING:
+          js_string_unref (pieces[i].info.string);
+          break;
+        case JAST_TEMPLATE_PIECE_EXPR:
+          jast_expr_free (pieces[i].info.expr);
+          break;
+      }
+  MAYBE_CLEAR_STACK_STARTED_ARRAY (pieces);
+  return NULL;
+}
+
+static JAST_Expr *
+parse_regex_expr (JAST_Lexer *lexer)
+{
+  struct JS_Regex *regex = NULL;
+  size_t offset;
+  switch (js_regex_parse (lexer->cur.length,
+                          lexer->data + lexer->cur.offset,
+                          &offset,
+                          &regex))
+    {
+      case JS_REGEX_PARSE_RESULT_OK:
+        break;
+      case JS_REGEX_PARSE_RESULT_ZERO_LENGTH:
+        set_parse_error (lexer, JAST_PARSE_ERROR_SEMANTICS, &lexer->cur.position,
+                         "zero-length regex");
+        return NULL;
+      case JS_REGEX_PARSE_RESULT_BAD_CHAR:
+        set_bad_character_parse_error (lexer, &lexer->data[lexer->cur.offset + offset]);
+        return NULL;
+      case JS_REGEX_PARSE_RESULT_PREMATURE_EOF:
+        set_premature_eof_parse_error (lexer, "regex");
+        return NULL;
+    }
+
+  switch (jast_lexer_advance (lexer))
+    {
+      case JAST_LEXER_ADVANCE_OK:
+        break;
+      case JAST_LEXER_ADVANCE_EOF:
+        break;
+      case JAST_LEXER_ADVANCE_ERROR:
+        return NULL;
+    }
+
+  JAST_RegexValue_Expr *rv = alloc_expr (JAST_EXPR_REGEX_VALUE, sizeof (JAST_RegexValue_Expr));
+  rv->regex = regex;
+  return (JAST_Expr *) rv;
 }
 
 /* Takes ownership of function_expr, even on error. */
@@ -3159,6 +3543,165 @@ arg_error_cleanup:
   MAYBE_CLEAR_STACK_STARTED_ARRAY (args);
   return NULL;
 }
+typedef enum
+{
+  ARROW_FUNCTION_RESULT_OK,
+  ARROW_FUNCTION_RESULT_ERROR,
+  ARROW_FUNCTION_RESULT_TRY_AS_PAREN
+} ArrowFunctionResult;
+static JAST_Statement *
+parse_arrow_and_body (JAST_Lexer *lexer)
+{
+  switch (jast_lexer_advance (lexer))
+    {
+      case JAST_LEXER_ADVANCE_ERROR:
+        return NULL;
+      case JAST_LEXER_ADVANCE_OK:
+        break;
+      case JAST_LEXER_ADVANCE_EOF:
+        set_premature_eof_parse_error(lexer, "after =>");
+        return NULL;
+    }
+  if (lexer->cur.type == JAST_TOKEN_LBRACE)
+    {
+      return parse_compound_stmt (lexer);
+    }
+  else
+    {
+      JAST_Expr *expr = parse_expr (lexer, PARSE_EXPR_ALLOW_TERNARY);
+      if (expr == NULL)
+        return NULL;
+      JAST_Return_Statement *rv = alloc_statement (JAST_STATEMENT_RETURN, sizeof (JAST_Return_Statement));
+      rv->expr = expr;
+      return (JAST_Statement *) rv;
+    }
+
+}
+
+static ArrowFunctionResult
+try_arrow_function (JAST_Lexer *lexer, JAST_Expr **out)
+{
+  assert(lexer->error == NULL);
+
+  if (!lexer->has_next_next)
+    return ARROW_FUNCTION_RESULT_TRY_AS_PAREN;
+
+  /* Quick out if it doesn't seem to match existing patterns. */
+  if (lexer->cur.type == JAST_TOKEN_RPAREN
+   && lexer->next.type == JAST_TOKEN_ARROW)
+    {
+      // No-Arg arrow expressions.
+    }
+  else if (lexer->cur.type == JAST_TOKEN_BAREWORD
+   && lexer->next.type == JAST_TOKEN_RPAREN
+   && lexer->next_next.type == JAST_TOKEN_ARROW
+   )
+    {
+      // Single-Arg, parenthesized arrow expressions.
+    }
+  else if (lexer->cur.type == JAST_TOKEN_BAREWORD
+   && lexer->next.type == JAST_TOKEN_COMMA
+   && lexer->next_next.type == JAST_TOKEN_BAREWORD)
+    {
+      // Multiple-Arg (parenthesized) arrow expressions.
+    }
+  else
+    return ARROW_FUNCTION_RESULT_TRY_AS_PAREN;
+
+  JAST_Lexer lex = *lexer;
+  ArrowFunctionResult res = ARROW_FUNCTION_RESULT_TRY_AS_PAREN;
+  DEFINE_STACK_STARTED_ARRAY(JS_String *, formals, 8);
+  while (lexer->has_cur && lexer->cur.type != JAST_TOKEN_RPAREN)
+    {
+      if (lexer->cur.type != JAST_TOKEN_BAREWORD)
+        {
+          goto error_cleanup;
+        }
+      JS_String *s = bareword_token_to_string(lexer, &lexer->cur);
+      if (!s)
+        {
+          res = ARROW_FUNCTION_RESULT_ERROR;
+          goto error_cleanup;
+        }
+      APPEND_TO_STACK_STARTED_ARRAY(JS_String *, formals, s);
+      switch (jast_lexer_advance (lexer))
+        {
+        case JAST_LEXER_ADVANCE_OK:
+          break;
+        case JAST_LEXER_ADVANCE_EOF:
+          set_premature_eof_parse_error (lexer, "missing ) in formal argument list");
+          res = ARROW_FUNCTION_RESULT_ERROR;
+          goto error_cleanup;
+        case JAST_LEXER_ADVANCE_ERROR:
+          res = ARROW_FUNCTION_RESULT_ERROR;
+          goto error_cleanup;
+        }
+      if (lexer->cur.type == JAST_TOKEN_COMMA)
+        {
+          switch (jast_lexer_advance (lexer))
+            {
+            case JAST_LEXER_ADVANCE_OK:
+              break;
+            case JAST_LEXER_ADVANCE_EOF:
+              set_premature_eof_parse_error (lexer, "missing ) in formal argument list");
+              res = ARROW_FUNCTION_RESULT_ERROR;
+              goto error_cleanup;
+            case JAST_LEXER_ADVANCE_ERROR:
+              res = ARROW_FUNCTION_RESULT_ERROR;
+              goto error_cleanup;
+            }
+        }
+      else if (lexer->cur.type != JAST_TOKEN_RPAREN)
+        {
+          goto error_cleanup;
+        }
+    }
+  if (!lexer->has_cur)
+    goto error_cleanup;         // try as paren-expr
+
+  // skip right-paren
+  switch (jast_lexer_advance (lexer))
+    {
+      case JAST_LEXER_ADVANCE_OK:
+        break;
+      case JAST_LEXER_ADVANCE_EOF:
+        goto error_cleanup;         // try as paren-expr
+      case JAST_LEXER_ADVANCE_ERROR:
+        res = ARROW_FUNCTION_RESULT_ERROR;
+        goto error_cleanup;
+    }
+
+  if (lexer->cur.type != JAST_TOKEN_ARROW)
+    goto error_cleanup;
+
+  JAST_Statement *body = parse_arrow_and_body (lexer);
+  if (body == NULL)
+    {
+      res = ARROW_FUNCTION_RESULT_ERROR;
+      goto error_cleanup;
+    }
+  size_t str_size = sizeof (JS_String *) * n_formals;
+  JAST_Arrow_Expr *arrow = alloc_expr (JAST_EXPR_ARROW, sizeof (JAST_Arrow_Expr) + str_size);
+  arrow->n_args = n_formals;
+  arrow->args = (JS_String **) (arrow + 1);
+  memcpy (arrow->args, formals, str_size);
+  arrow->body = body;
+  *out = (JAST_Expr *) arrow;
+  return ARROW_FUNCTION_RESULT_OK;
+
+error_cleanup:
+
+  if (res == ARROW_FUNCTION_RESULT_TRY_AS_PAREN)
+    {
+      if (lexer->error)
+        jast_parse_error_free (lexer->error);
+      *lexer = lex;
+    }
+
+  return res;
+}
+
+
 
 static JAST_Expr *
 parse_opfree_expr (JAST_Lexer *lexer)
@@ -3214,6 +3757,20 @@ parse_opfree_expr (JAST_Lexer *lexer)
         case JAST_LEXER_ADVANCE_EOF:
           set_premature_eof_parse_error (lexer, "after (");
           return NULL;
+        }
+
+      if (lexer->has_next_next)
+        {
+          JAST_Expr *arrow;
+          switch (try_arrow_function (lexer, &arrow))
+            {
+              case ARROW_FUNCTION_RESULT_OK:
+                return arrow;
+              case ARROW_FUNCTION_RESULT_ERROR:
+                return NULL;
+              case ARROW_FUNCTION_RESULT_TRY_AS_PAREN:
+                break;
+             }
         }
       expr = parse_expr (lexer, PARSE_EXPR_ALLOW_COMMA|PARSE_EXPR_ALLOW_TERNARY);
       if (expr == NULL)
@@ -3271,10 +3828,6 @@ parse_opfree_expr (JAST_Lexer *lexer)
     case JAST_TOKEN_BAREWORD:
       {
         JS_String *bw = bareword_token_to_string (lexer, &lexer->cur);
-        JAST_Identifier_Expr *id_expr = alloc_expr(JAST_EXPR_IDENTIFIER, sizeof(JAST_Identifier_Expr));
-        id_expr->symbol = bw;
-        expr = (JAST_Expr *) id_expr;
-      }
       switch (jast_lexer_advance (lexer))
         {
         case JAST_LEXER_ADVANCE_ERROR:
@@ -3285,6 +3838,35 @@ parse_opfree_expr (JAST_Lexer *lexer)
         case JAST_LEXER_ADVANCE_EOF:
           return expr;
         }
+      if (lexer->cur.type == JAST_TOKEN_ARROW)
+        {
+          JAST_Statement *body = parse_arrow_and_body (lexer);
+          if (body == NULL)
+            return NULL;
+          JAST_Arrow_Expr *arrow = alloc_expr(JAST_EXPR_ARROW, sizeof(JAST_Arrow_Expr) + sizeof (JS_String *));
+          arrow->n_args = 1;
+          arrow->args = (JS_String **) (arrow + 1);
+          arrow->args[0] = bw;
+          arrow->body = body;
+          return (JAST_Expr *) arrow;
+        }
+      
+        JAST_Identifier_Expr *id_expr = alloc_expr(JAST_EXPR_IDENTIFIER, sizeof(JAST_Identifier_Expr));
+        id_expr->symbol = bw;
+        expr = (JAST_Expr *) id_expr;
+      }
+      break;
+
+    case JAST_TOKEN_TEMPLATE_HEAD:
+      expr = parse_template_expr (lexer);
+      if (expr == NULL)
+        return NULL;
+      break;
+
+    case JAST_TOKEN_REGEX:
+      expr = parse_regex_expr (lexer);
+      if (expr == NULL)
+        return NULL;
       break;
 
     default:
@@ -3743,6 +4325,13 @@ jast_expr_free (JAST_Expr *expr)
           jast_statement_free (expr->function_value_expr.body);
         }
         break;
+      case JAST_EXPR_ARROW:
+        {
+          for (size_t i = 0; i < expr->arrow_expr.n_args; i++)
+            js_string_unref (expr->arrow_expr.args[i]);
+          jast_statement_free (expr->arrow_expr.body);
+        }
+        break;
       case JAST_EXPR_OBJECT_VALUE:
         {
           JAST_ObjectFieldValue *fields = expr->object_value_expr.fields;
@@ -3761,6 +4350,21 @@ jast_expr_free (JAST_Expr *expr)
         break;
       case JAST_EXPR_STRING_VALUE:
         js_string_unref (expr->string_value_expr.value);
+        break;
+      case JAST_EXPR_REGEX_VALUE:
+        js_regex_unref (expr->regex_value_expr.regex);
+        break;
+      case JAST_EXPR_TEMPLATE:
+        for (size_t i = 0; i < expr->template_expr.n_pieces; i++)
+          switch (expr->template_expr.pieces[i].type)
+            {
+              case JAST_TEMPLATE_PIECE_STRING:
+                js_string_unref (expr->template_expr.pieces[i].info.string);
+                break;
+              case JAST_TEMPLATE_PIECE_EXPR:
+                jast_expr_free (expr->template_expr.pieces[i].info.expr);
+                break;
+            }
         break;
       case JAST_EXPR_NUMBER_VALUE:
         break;
@@ -3815,6 +4419,9 @@ parse_stmt (JAST_Lexer *lexer)
       case JAST_TOKEN_VAR:
       case JAST_TOKEN_CONST:
         return parse_vardecl_statement(lexer);
+
+      case JAST_TOKEN_RETURN:
+        return parse_return_statement(lexer);
 
       case JAST_TOKEN_LBRACE:
         {
@@ -3879,6 +4486,7 @@ parse_stmt (JAST_Lexer *lexer)
         }
 
       /* Statements that are just expressions. */
+      case JAST_TOKEN_LPAREN:
       case JAST_TOKEN_FUNCTION:
       case JAST_TOKEN_STRING:
       case JAST_TOKEN_NUMBER:
@@ -3888,7 +4496,6 @@ parse_stmt (JAST_Lexer *lexer)
       case JAST_TOKEN_NULL:
       case JAST_TOKEN_UNDEFINED:
 
-      case JAST_TOKEN_LPAREN:
       case JAST_TOKEN_MINUS:
       case JAST_TOKEN_BITWISE_NOT:
       case JAST_TOKEN_LOGICAL_NOT:
@@ -3952,6 +4559,7 @@ parse_stmt (JAST_Lexer *lexer)
           rv->label = opt_label;
           return (JAST_Statement *) rv;
         }
+
 
       default:
         fprintf(stderr, "unexpected token type %s\n", jast_token_type_name(lexer->cur.type));
@@ -4090,6 +4698,9 @@ void jast_statement_free (JAST_Statement *stmt)
         break;
       case JAST_STATEMENT_LABEL:
         js_string_unref (stmt->label_statement.label);
+        break;
+      case JAST_STATEMENT_RETURN:
+        jast_expr_free (stmt->return_statement.expr);
         break;
       case JAST_STATEMENT_EXPRESSION:
         jast_expr_free (stmt->expr_statement.expr);

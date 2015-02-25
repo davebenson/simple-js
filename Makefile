@@ -10,10 +10,14 @@ generated/scan-id-start.c: mk-scan-utf8-character-class character-classes/id-sta
 	@mkdir -p generated
 	./mk-scan-utf8-character-class character-classes/id-start.txt > generated/scan-id-start.c
 
-CFLAGS = -W -Wall -g
+CFLAGS = -W -Wall -g `pcre-config --cflags`
+
 clean:
 	rm -f *.o
 	rm tests/test-jast generated/*.c mk-scan-utf8-character-class
+
+check: tests/test-jast
+	tests/test-jast
 
 %.o: %.c
 	gcc -c $(CFLAGS) $<
@@ -21,6 +25,6 @@ clean:
 jutf8.o: generated/scan-id-continue.c generated/scan-id-start.c jutf8.c
 	gcc $(CFLAGS) -c jutf8.c
 
-tests/test-jast: jast.o js-string.o jhash.o jutf8.o tests/test-jast.c
-	gcc $(CFLAGS) -o tests/test-jast jast.o js-string.o jhash.o jutf8.o tests/test-jast.c
+tests/test-jast: jast.o js-string.o js-regex.o jhash.o jutf8.o tests/test-jast.c
+	gcc $(CFLAGS) `pcre-config --libs` -o tests/test-jast jast.o js-string.o js-regex.o jhash.o jutf8.o tests/test-jast.c
 

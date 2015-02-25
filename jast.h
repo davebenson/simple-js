@@ -75,6 +75,7 @@ typedef enum {
   JAST_STATEMENT_LABEL,
   JAST_STATEMENT_BREAK,
   JAST_STATEMENT_CONTINUE,
+  JAST_STATEMENT_RETURN,
   JAST_STATEMENT_EXPRESSION
 } JAST_StatementType;
 
@@ -106,11 +107,11 @@ typedef enum
   JAST_SWITCH_CLAUSE_CASE,
   JAST_SWITCH_CLAUSE_STATEMENT,
   JAST_SWITCH_CLAUSE_DEFAULT,
-} JAST_Switch_ClauseType;
+} JAST_Switch_Clause_Type;
 
 typedef struct
 {
-  JAST_Switch_ClauseType clause_type;
+  JAST_Switch_Clause_Type clause_type;
   union {
     JAST_Expr *case_value;
     JAST_Statement *statement;
@@ -195,11 +196,11 @@ typedef enum
   JAST_VARIABLE_DECLARATION_VAR,
   JAST_VARIABLE_DECLARATION_LET,
   JAST_VARIABLE_DECLARATION_CONST,
-} JAST_VariableDeclarationType;
+} JAST_VariableDeclaration_Type;
 
 typedef struct {
   JAST_Base_Statement base;
-  JAST_VariableDeclarationType type;
+  JAST_VariableDeclaration_Type type;
   size_t n_vars;
   JAST_BindingPattern *vars;
 } JAST_VariableDeclarations_Statement;
@@ -208,6 +209,11 @@ typedef struct {
   JAST_Base_Statement base;
   JAST_Expr *expr;
 } JAST_Expression_Statement;
+
+typedef struct {
+  JAST_Base_Statement base;
+  JAST_Expr *expr;
+} JAST_Return_Statement;
 
 union JAST_Statement {
   JAST_StatementType type;
@@ -225,6 +231,7 @@ union JAST_Statement {
   JAST_Label_Statement label_statement;
   JAST_Expression_Statement expr_statement;
   JAST_Break_Statement break_statement;
+  JAST_Return_Statement return_statement;
   JAST_Continue_Statement continue_statement;
   JAST_VariableDeclarations_Statement vardecls_statement;
   JAST_Goto_Statement goto_statement;
@@ -242,19 +249,22 @@ typedef enum
   JAST_EXPR_INDEX,
   JAST_EXPR_INVOKE,
   JAST_EXPR_FUNCTION_VALUE,
+  JAST_EXPR_ARROW,
   JAST_EXPR_OBJECT_VALUE,
   JAST_EXPR_ARRAY_VALUE,
   JAST_EXPR_STRING_VALUE,
+  JAST_EXPR_REGEX_VALUE,
+  JAST_EXPR_TEMPLATE,
   JAST_EXPR_NUMBER_VALUE,
   JAST_EXPR_BOOLEAN_VALUE,
   JAST_EXPR_UNDEFINED_VALUE,
   JAST_EXPR_NULL_VALUE,
   JAST_EXPR_IDENTIFIER
-} JAST_ExprType;
-const char *jast_expr_type_name (JAST_ExprType type);
+} JAST_Expr_Type;
+const char *jast_expr_type_name (JAST_Expr_Type type);
 typedef struct
 {
-  JAST_ExprType type;
+  JAST_Expr_Type type;
 } JAST_Base_Expr;
 
 typedef enum
@@ -289,6 +299,7 @@ typedef enum
   JAST_BINARY_OP_BITWISE_AND,
   JAST_BINARY_OP_BITWISE_XOR,
 
+  JAST_BINARY_OP_COMMA,
   JAST_BINARY_OP_ASSIGN,
   JAST_BINARY_OP_ADD_ASSIGN,
   JAST_BINARY_OP_SUBTRACT_ASSIGN,
@@ -367,6 +378,14 @@ typedef struct
 typedef struct
 {
   JAST_Base_Expr base;
+  size_t n_args;
+  JS_String **args;
+  JAST_Statement *body;         // either RETURN (implicit return); or COMPOUND
+} JAST_Arrow_Expr;
+
+typedef struct
+{
+  JAST_Base_Expr base;
   double value;
 } JAST_NumberValue_Expr;
 
@@ -375,6 +394,34 @@ typedef struct
   JAST_Base_Expr base;
   JS_String *value;
 } JAST_StringValue_Expr;
+
+typedef struct
+{
+  JAST_Base_Expr base;
+  struct JS_Regex *regex;
+} JAST_RegexValue_Expr;
+
+typedef enum
+{
+  JAST_TEMPLATE_PIECE_STRING,
+  JAST_TEMPLATE_PIECE_EXPR
+} JAST_TemplatePiece_Type;
+
+typedef struct 
+{
+  JAST_TemplatePiece_Type type;
+  union {
+    JS_String *string;
+    JAST_Expr *expr;
+  } info;
+} JAST_TemplatePiece;
+
+typedef struct
+{
+  JAST_Base_Expr base;
+  size_t n_pieces;
+  JAST_TemplatePiece *pieces;
+} JAST_Template_Expr;
 
 typedef struct
 {
@@ -412,7 +459,7 @@ typedef struct
 } JAST_New_Expr;
 
 union JAST_Expr {
-  JAST_ExprType type;
+  JAST_Expr_Type type;
   JAST_UnaryOp_Expr unary_op_expr;
   JAST_BinaryOp_Expr binary_op_expr;
   JAST_Dot_Expr dot_expr;
@@ -420,8 +467,11 @@ union JAST_Expr {
   JAST_Index_Expr index_expr;
   JAST_Invoke_Expr invoke_expr;
   JAST_FunctionValue_Expr function_value_expr;
+  JAST_Arrow_Expr arrow_expr;
   JAST_NumberValue_Expr number_value_expr;
   JAST_StringValue_Expr string_value_expr;
+  JAST_RegexValue_Expr regex_value_expr;
+  JAST_Template_Expr template_expr;
   JAST_ArrayValue_Expr array_value_expr;
   JAST_ObjectValue_Expr object_value_expr;
   JAST_Assign_Expr assign_expr;
