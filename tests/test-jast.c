@@ -702,9 +702,24 @@ int main()
   assert_is_number_value (ex->binary_op_expr.subs[1], 2.);
   jast_statement_free (stmt);
   }
-  
 
-  // TODO: with statement
+  {
+  stmt = parse_string("with (some_expr) a += b;");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_WITH);
+  assert_is_identifier_expr(sub->with_statement.expr, "some_expr");
+  assert(sub->with_statement.body->type == JAST_STATEMENT_EXPRESSION);
+  ex = sub->with_statement.body->expr_statement.expr;
+  assert(ex->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.op == JAST_BINARY_OP_ADD_ASSIGN);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[0], "a");
+  assert_is_identifier_expr(ex->binary_op_expr.subs[1], "b");
+  jast_statement_free (stmt);
+  }
+
   // TODO: module system
   // TODO: generator
 
