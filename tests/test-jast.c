@@ -67,11 +67,39 @@ assert_is_string_value(JAST_Expr *e, const char *e_str, const char *expected_str
 #define assert_is_string_value(e, id) \
   assert_is_string_value(e, #e, id, __LINE__)
 
+#define ESC "\33"
+#define VT100_UNDERSCORE ESC "[4m"
+#define VT100_DEFAULT_FONT ESC "("
+#define VT100_ALT_FONT ESC ")"
+#define VT100_DIM ESC "[2m"
+#define VT100_RED ESC "[31m"
+#define VT100_GREEN ESC "[32m"
+#define VT100_YELLOW ESC "[33m"
+#define VT100_BLUE ESC "[34m"
+#define VT100_MAGENTA ESC "[35m"
+#define VT100_CYAN ESC "[36m"
+#define VT100_WHITE ESC "[37m"
+#define VT100_RESET ESC "[0m"
+
+
+static void
+clean_print (const char *str)
+{
+  while (*str)
+    {
+      if (*str == '\n')
+        fputs(VT100_DIM "\\n" VT100_RESET, stderr);
+      else
+        fputc(*str, stderr);
+      str++;
+    }
+}
+
 static JAST_Statement *
 parse_string (const char *str)
 {
   JAST_ParseError *error = NULL;
-  fprintf(stderr, "parsing: %s\n",str);
+  fprintf(stderr, "parsing: "); clean_print (str); fprintf(stderr, "\n");
   JAST_Statement *rv = JAST_parse_data (strlen (str), str, "file.js", &error);
   if (!rv) {
     fprintf(stderr, "error parsing: %s\n", jast_parse_error_to_string(error));
@@ -79,6 +107,23 @@ parse_string (const char *str)
   }
   return rv;
 }
+
+static void
+test_parse_failure(const char *str, int line_no)
+{
+  JAST_ParseError *error = NULL;
+  fprintf(stderr, "fail parse: "); clean_print (str); fprintf(stderr, "\n");
+  JAST_Statement *rv = JAST_parse_data (strlen (str), str, "file.js", &error);
+  if (rv)
+    {
+      fprintf(stderr,
+              "parse of %s succeeded, was supposed to fail %s, line %u\n",
+              str, __FILE__, line_no);
+      exit (1);
+    }
+  jast_parse_error_free (error);
+}
+#define test_parse_failure(str) test_parse_failure(str, __LINE__)
 
 int main()
 {
@@ -124,9 +169,8 @@ int main()
   assert(tmp->for_statement.condition->binary_op_expr.subs[1]->type == JAST_EXPR_NUMBER_VALUE);
   assert(tmp->for_statement.condition->binary_op_expr.subs[1]->number_value_expr.value == 10);
   assert(tmp->for_statement.advance);
-  assert(tmp->for_statement.advance->type == JAST_STATEMENT_EXPRESSION);
-  assert(tmp->for_statement.advance->expr_statement.expr->type == JAST_EXPR_UNARY_OP);
-  assert(tmp->for_statement.advance->expr_statement.expr->unary_op_expr.op == JAST_UNARY_OP_POST_INCR);
+  assert(tmp->for_statement.advance->type == JAST_EXPR_UNARY_OP);
+  assert(tmp->for_statement.advance->unary_op_expr.op == JAST_UNARY_OP_POST_INCR);
   assert(tmp->for_statement.body->type == JAST_STATEMENT_COMPOUND);
   assert(tmp->for_statement.body->compound_statement.n_subs == 1);
   assert(tmp->for_statement.body->compound_statement.subs[0]->type == JAST_STATEMENT_EXPRESSION);
@@ -719,6 +763,187 @@ int main()
   assert_is_identifier_expr(ex->binary_op_expr.subs[1], "b");
   jast_statement_free (stmt);
   }
+
+  {
+  stmt = parse_string("let a = [0b10, 0b11, 0B100, 0o7, 0o10, 0O11, 0xaa];");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_VARIABLE_DECLARATIONS);
+  ex = sub->vardecls_statement.vars[0].initializer;
+  assert(ex->type == JAST_EXPR_ARRAY_VALUE);
+  assert(ex->array_value_expr.n_values == 7);
+  JAST_Expr **values = ex->array_value_expr.values;
+  assert_is_number_value (values[0], 2.);
+  assert_is_number_value (values[1], 3.);
+  assert_is_number_value (values[2], 4.);
+  assert_is_number_value (values[3], 7.);
+  assert_is_number_value (values[4], 8.);
+  assert_is_number_value (values[5], 9.);
+  assert_is_number_value (values[6], 170.);
+  jast_statement_free (stmt);
+  }
+
+  //
+  // Automatic Semicolon Insertion. Section 11.9.
+  //
+  // Should test every rule that
+  //    (1) includes [no LineTerminator here]
+  //    (2) includes semicolon
+  //
+  // TODO for(i = 0\ni < 10\ni++)
+  // TODO {return}
+  // TODO {i++}
+  // TODO foo()
+  //
+  {
+  stmt = parse_string("continue\na;");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 2);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_CONTINUE);
+  assert(sub->continue_statement.label == NULL);
+  sub = stmt->compound_statement.subs[1];
+  assert(sub->type == JAST_STATEMENT_EXPRESSION);
+  ex = sub->expr_statement.expr;
+  assert_is_identifier_expr(ex, "a");
+  jast_statement_free (stmt);
+  }
+  {
+  stmt = parse_string("a\n++\nb");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 2);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_EXPRESSION);
+  ex = sub->expr_statement.expr;
+  assert_is_identifier_expr(ex, "a");
+  sub = stmt->compound_statement.subs[1];
+  assert(sub->type == JAST_STATEMENT_EXPRESSION);
+  ex = sub->expr_statement.expr;
+  assert(ex->type == JAST_EXPR_UNARY_OP);
+  assert(ex->unary_op_expr.op == JAST_UNARY_OP_PRE_INCR);
+  assert_is_identifier_expr(ex->unary_op_expr.sub, "b");
+  jast_statement_free (stmt);
+  }
+  {
+  stmt = parse_string("a=b\nB=A");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 2);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_EXPRESSION);
+  ex = sub->expr_statement.expr;
+  assert(ex->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.op == JAST_BINARY_OP_ASSIGN);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[0], "a");
+  assert_is_identifier_expr(ex->binary_op_expr.subs[1], "b");
+  sub = stmt->compound_statement.subs[1];
+  assert(sub->type == JAST_STATEMENT_EXPRESSION);
+  ex = sub->expr_statement.expr;
+  assert(ex->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.op == JAST_BINARY_OP_ASSIGN);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[0], "B");
+  assert_is_identifier_expr(ex->binary_op_expr.subs[1], "A");
+  jast_statement_free (stmt);
+  }
+
+  {
+  test_parse_failure("{ 1 2 } 3");
+  }
+  {
+  stmt = parse_string("{ 1\n2 } 3");
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 2);
+  sub = stmt->compound_statement.subs[0];
+  assert(sub->type == JAST_STATEMENT_COMPOUND);
+  assert(sub->compound_statement.n_subs == 2);
+  assert(sub->compound_statement.subs[0]->type == JAST_STATEMENT_EXPRESSION);
+  assert_is_number_value (sub->compound_statement.subs[0]->expr_statement.expr, 1);
+  assert(sub->compound_statement.subs[1]->type == JAST_STATEMENT_EXPRESSION);
+  assert_is_number_value (sub->compound_statement.subs[1]->expr_statement.expr, 2);
+  sub = stmt->compound_statement.subs[1];
+  assert(sub->type == JAST_STATEMENT_EXPRESSION);
+  assert_is_number_value (sub->expr_statement.expr, 3);
+  jast_statement_free (stmt);
+  }
+
+  {
+  test_parse_failure("for (a; b\n)");
+  }
+  {
+  test_parse_failure("if (a > b)\nelse c = d");
+  }
+  {
+  stmt = parse_string("a = b + c\n(d / e).print()");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert (sub->type == JAST_STATEMENT_EXPRESSION);
+  assert (sub->expr_statement.expr->type == JAST_EXPR_BINARY_OP);
+  assert (sub->expr_statement.expr->binary_op_expr.op == JAST_BINARY_OP_ASSIGN);
+  assert_is_identifier_expr (sub->expr_statement.expr->binary_op_expr.subs[0], "a");
+  ex = sub->expr_statement.expr->binary_op_expr.subs[1];
+  assert(ex->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.op == JAST_BINARY_OP_ADD);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[0], "b");
+  ex = ex->binary_op_expr.subs[1];   /* c(d/e).print() */
+  assert(ex->type == JAST_EXPR_INVOKE);
+  assert(ex->invoke_expr.n_args == 0);
+  assert(ex->invoke_expr.function->type == JAST_EXPR_DOT);
+  assert_string_is_literal(ex->invoke_expr.function->dot_expr.member_name, "print");
+  ex = ex->invoke_expr.function->dot_expr.container;    /* c(d/e) */
+  assert(ex->type == JAST_EXPR_INVOKE);
+  assert_is_identifier_expr(ex->invoke_expr.function, "c");
+  assert(ex->invoke_expr.n_args == 1);
+  ex = ex->invoke_expr.args[0];
+  assert(ex->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.op == JAST_BINARY_OP_DIVIDE);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[0], "d");
+  assert_is_identifier_expr(ex->binary_op_expr.subs[1], "e");
+  jast_statement_free (stmt);
+  }
+
+  // assignment is right-assoc
+  {
+  stmt = parse_string("a = b = c");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert (sub->type == JAST_STATEMENT_EXPRESSION);
+  ex = sub->expr_statement.expr;
+  assert(ex->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.op == JAST_BINARY_OP_ASSIGN);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[0], "a");
+  ex = ex->binary_op_expr.subs[1];
+  assert(ex->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.op == JAST_BINARY_OP_ASSIGN);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[0], "b");
+  assert_is_identifier_expr(ex->binary_op_expr.subs[1], "c");
+  }
+  // addition (and everything except assignment) is left-assoc
+  {
+  stmt = parse_string("a + b - c");
+  assert(stmt);
+  assert(stmt->type == JAST_STATEMENT_COMPOUND);
+  assert(stmt->compound_statement.n_subs == 1);
+  sub = stmt->compound_statement.subs[0];
+  assert (sub->type == JAST_STATEMENT_EXPRESSION);
+  ex = sub->expr_statement.expr;
+  assert(ex->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.op == JAST_BINARY_OP_SUBTRACT);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[1], "c");
+  ex = ex->binary_op_expr.subs[0];
+  assert(ex->type == JAST_EXPR_BINARY_OP);
+  assert(ex->binary_op_expr.op == JAST_BINARY_OP_ADD);
+  assert_is_identifier_expr(ex->binary_op_expr.subs[0], "a");
+  assert_is_identifier_expr(ex->binary_op_expr.subs[1], "b");
+  }
+
 
   // TODO: module system
   // TODO: generator

@@ -72,6 +72,7 @@ typedef enum {
   JAST_STATEMENT_WITH,
   JAST_STATEMENT_VARIABLE_DECLARATIONS,
   JAST_STATEMENT_TRY_CATCH,
+  JAST_STATEMENT_THROW,
   JAST_STATEMENT_LABEL,
   JAST_STATEMENT_BREAK,
   JAST_STATEMENT_CONTINUE,
@@ -129,7 +130,7 @@ typedef struct {
   JAST_Base_Statement base;
   JAST_Statement *initial;
   JAST_Expr *condition;
-  JAST_Statement *advance;
+  JAST_Expr *advance;
   JAST_Statement *body;
 } JAST_For_Statement;
 
