@@ -8,8 +8,63 @@ typedef struct JAST_BindingPattern JAST_BindingPattern;
 
 #include "js-string.h"
 
+/* Compilation Utilities. */
+typedef struct {
+  JS_String *filename;
+  unsigned line_number;
+} JAST_Position;
+
+typedef enum {
+  JAST_PARSE_ERROR_BAD_CHARACTER,
+  JAST_PARSE_ERROR_BAD_TOKEN,
+  JAST_PARSE_ERROR_PREMATURE_EOF,
+  JAST_PARSE_ERROR_SEMANTICS
+} JAST_ParseError_Type;
+
+typedef struct {
+  JAST_ParseError_Type type;
+  JAST_Position position;
+  char *message;
+} JAST_ParseError;
+char *jast_parse_error_to_string (const JAST_ParseError *error);
+void  jast_parse_error_free      (JAST_ParseError       *error);
+
 
 /* --- binding patterns - like lvalues, but for variable declarations --- */
+
+/* ECMAScript6 allows patterns on the "left-hand-side"
+   of a declaration (as distinct from an LValue expression,
+   like "x" in "x += 1").
+
+   Sometimes this is called "destructuring" because it breaks
+   object elements out of structures.  It does not throw exceptions,
+   instead leaving unmatched patterns "undefined".
+
+   These can always be unravelled in code - it's just syntactic sugar.
+   For example:
+
+      let {a:b=1, c, d:[e,f], g:{...}} = some_object;
+
+   and it has semantics similar to the following, but better:
+
+         a = some_object.b || 1;   /// not correct if some_object.b==0!!!
+         c = some_object.c;
+         d = some_object. XXX
+
+   These are handled with "Binding Patterns".
+
+   They are used in various places:
+
+       (1) formal parameter lists, as in:
+              function({{a,b,c}) {
+                return a*b + c;
+              }
+
+       (2) variable declaration:
+              let {a,b,c} = options;
+
+ */
+
 typedef enum
 {
   JAST_BINDING_PATTERN_NONE,
@@ -40,33 +95,13 @@ struct JAST_FieldBindingPattern {
   JAST_BindingPattern binding;
 };
 
-typedef struct {
-  JS_String *filename;
-  unsigned line_number;
-} JAST_Position;
-
-typedef enum {
-  JAST_PARSE_ERROR_BAD_CHARACTER,
-  JAST_PARSE_ERROR_BAD_TOKEN,
-  JAST_PARSE_ERROR_PREMATURE_EOF,
-  JAST_PARSE_ERROR_SEMANTICS
-} JAST_ParseError_Type;
-
-typedef struct {
-  JAST_ParseError_Type type;
-  JAST_Position position;
-  char *message;
-} JAST_ParseError;
-char *jast_parse_error_to_string (const JAST_ParseError *error);
-void  jast_parse_error_free      (JAST_ParseError       *error);
-
 /* --- Statements --- */
 typedef enum {
   JAST_STATEMENT_COMPOUND,
   JAST_STATEMENT_IF,
   JAST_STATEMENT_SWITCH,
   JAST_STATEMENT_FOR,
-  JAST_STATEMENT_FOR_IN,
+  JAST_STATEMENT_FOR_IN,                /* includes "for...of..." */
   JAST_STATEMENT_WHILE,
   JAST_STATEMENT_DO_WHILE,
   JAST_STATEMENT_WITH,
@@ -364,6 +399,7 @@ typedef struct
 
 typedef struct
 {
+  // XXX: should be BindingPattern.
   JS_String *name;
 } JAST_FormalParam;
 
