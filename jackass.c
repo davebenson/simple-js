@@ -396,7 +396,8 @@ can_inline_as_iife (Jackass_Context *context,
 //    (2) create a new scope.
 //    (3) allocate the parameters as scope variables,
 //        initialized with temporaries.
-//    (4) evaluate function body.
+//    (4) evaluate function body.  Return statements should be assignments
+//        to the return-value, followed by a forward goto.
 //    (5) pop scope
 static JS_Boolean
 inline_iife  (Jackass_Context *context,
