@@ -1,13 +1,3 @@
-/* Goals:
- *  - constant / value propagation
- *  - all VarDecl stmts have just one variable
- *  - no 'var' - reduce to 'let' everywhere
- *  - "hoisting" - see ???
- *
- * Later?
- *  - IIFE inlining
- */
-
 static inline JS_Boolean
 is_constant (JAST_Expr *e)
 {
@@ -98,7 +88,76 @@ process_cond (Jex_Context *context,
   return jast_expr_new_cond (n_terms_out, terms_out);
 }
 
-JAST_Expr *jex_context_expr (Jex_Context *context,
+static JAST_Expr *
+process_template (Jex_Context *context,
+                  JAST_Template_Expr *e)
+{
+  size_t N = e->n_pieces;
+  JAST_TemplatePiece *pieces = alloca (sizeof (JAST_TemplatePiece) * N);
+  size_t n_out = 0;
+  for (size_t i = 0; i < N; i++)
+    {
+      if (e->pieces[i]->type == JAST_TEMPLATE_PIECE_STRING)
+        {
+          if (pieces->info.string->length == 0)
+            continue;
+          if (n_out > 0 && pieces[n_out-1].type == JAST_TEMPLATE_PIECE_STRING)
+            {
+              JS_String *old_s = pieces[n_out-1].info.string;
+              JS_String *new_s = js_strings_concat (old_s, s);
+              pieces[n_out-1].info.string = new_s;
+              js_string_unref (old_s);
+              js_string_unref (s);
+            }
+          else
+            {
+              pieces[n_out++] = e->pieces[i];
+              js_string_ref (pieces[n_out-1].info.string);
+            }
+        }
+      else
+        {
+          assert(e->pieces[i].type == JAST_TEMPLATE_PIECE_EXPR);
+          JAST_Expr *sub = jex_masticate_expr (context, e->pieces[i].info.expr);
+          if (sub == NULL)
+            {
+              return NULL;
+            }
+          else if (is_constant (sub))
+            {
+              JS_String *s = jex_constprop_expr_to_string (sub);
+              if (n_out > 0 && pieces[n_out-1].type == JAST_TEMPLATE_PIECE_STRING)
+                {
+                  JS_String *old_s = pieces[n_out-1].info.string;
+                  JS_String *new_s = js_strings_concat (old_s, s);
+                  pieces[n_out-1].info.string = new_s;
+                  js_string_unref (old_s);
+                  js_string_unref (s);
+                }
+              else
+                {
+                  pieces[n_out].type = JAST_TEMPLATE_PIECE_STRING;
+                  pieces[n_out].info.string = s;
+                  n_out++;
+                }
+            }
+          else
+            {
+              pieces[n_out].type = JAST_TEMPLATE_PIECE_EXPR;
+              pieces[n_out].info.expr = sub;
+              n_out++;
+            }
+        }
+    }
+  if (n_out == 0)
+    return jast_expr_new_string_value (js_string_new_empty ());
+  if (n_out == 1 && pieces[0].type == JAST_TEMPLATE_PIECE_STRING)
+    return jast_expr_new_string_value (pieces[0].info.string);
+  return jast_expr_new_template (n_out, pieces);
+}
+
+
+JAST_Expr *jex_masticate_expr (Jex_Context *context,
                              JAST_Expr   *expr)
 {
   switch (expr->type)
@@ -163,19 +222,35 @@ JAST_Expr *jex_context_expr (Jex_Context *context,
         }
 
       case JAST_EXPR_FUNCTION_VALUE:
-        ...
+        {
+          JAST_FunctionValue_Expr *e = &expr->function_value_expr;
+          jex_context_nest_function (context, e->n_args, e->args);
+          JAST_Statement *stmt = jex_masticate_statement (context, stmt);
+          if (!stmt)
+            return NULL;
+          JAST_Expr *rv = jex_context_pop_nested_function (context, stmt, JS_TRUE);
+          return rv;
+        }
 
       case JAST_EXPR_ARROW:
-        ...
+        {
+          JAST_FunctionValue_Expr *e = &expr->function_value_expr;
+          jex_context_nest_function (context, e->n_args, e->args);
+          JAST_Statement *stmt = jex_masticate_statement (context, stmt);
+          if (!stmt)
+            return NULL;
+          JAST_Expr *rv = jex_context_pop_nested_function (context, stmt, JS_FALSE);
+          return rv;
+        }
 
       case JAST_EXPR_TEMPLATE:
-        ... fold subexprs; remove 0 length + fold contiguous substrings; 
-
+        return process_template (context, &expr->template_expr);
+        
       case JAST_EXPR_OBJECT_VALUE:
-        ... fold subexprs
+        return process_object_value (context, &expr->object_value_expr);
 
       case JAST_EXPR_ARRAY_VALUE:
-        ... fold subexprs
+        return process_array_value (context, &expr->array_value_expr);
 
       case JAST_EXPR_STRING_VALUE:
       case JAST_EXPR_REGEX_VALUE:
@@ -186,13 +261,22 @@ JAST_Expr *jex_context_expr (Jex_Context *context,
         return jast_expr_copy (expr);
 
       case JAST_EXPR_IDENTIFIER:
-        ...
+        {
+          Jex_Var *v = jex_context_lookup_var (...);
+          if (v)
+            {
+              ... note that the variable is captured, if we are in a nested function
+            }
+          else
+            {
+              ... must be a global
+            }
+        }
     }
 }
 
-JAST_Statement *jex_context_translate (Jex_Context *context,
-                                       JAST_Statement *stmt)
+JAST_Statement *jex_masticate_statement (Jex_Context *context,
+                                         JAST_Statement *stmt)
 {
 ...
 }
-  

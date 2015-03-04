@@ -397,18 +397,20 @@ typedef struct
   JAST_Expr *lhs, *rhs;
 } JAST_Assign_Expr;
 
+#if 0
 typedef struct
 {
   // XXX: should be BindingPattern.
   JS_String *name;
 } JAST_FormalParam;
+#endif
 
 typedef struct
 {
   JAST_Base_Expr base;
   JS_String *opt_name;
   unsigned n_args;
-  JAST_FormalParam *args;
+  JAST_BindingPattern *args;
   JAST_Statement *body;
 } JAST_FunctionValue_Expr;
 
