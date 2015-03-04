@@ -16,6 +16,41 @@
      For ForIn ForOf DoWhile While
      Switch
  */
+typedef union JEX JEX;
+
+typedef enum
+{
+  JEX_TYPE_GROUP,
+  JEX_TYPE_GOTO,
+  JEX_TYPE_GOTO_IF,
+  JEX_TYPE_GOTO_TABLE,
+  JEX_TYPE_LABEL,
+  JEX_TYPE_WITH,
+  JEX_TYPE_TRY_CATCH,
+  JEX_TYPE_THROW,
+  JEX_TYPE_RETURN,
+  JEX_TYPE_UNARY_OP,
+  JEX_TYPE_BINARY_OP,
+  JEX_TYPE_DOT,
+  JEX_TYPE_INDEX,
+  JEX_TYPE_INVOKE,
+  JEX_TYPE_ASSIGN,
+  JEX_TYPE_FUNCTION_VALUE,
+  JEX_TYPE_ARROW_VALUE,
+  JEX_TYPE_NUMBER_VALUE,
+  JEX_TYPE_STRING_VALUE,
+  JEX_TYPE_REGEX_VALUE,
+  JEX_TYPE_TEMPLATE_VALUE,
+  JEX_TYPE_ARRAY_VALUE,
+  JEX_TYPE_OBJECT_VALUE,
+  JEX_TYPE_IDENTIFIER,
+  JEX_TYPE_NEW
+} JEX_Type;
+
+
+typedef struct JEX_Base {
+  JEX_Type type;
+} JEX_Base;
 
 typedef struct JEX_Group {
   JEX_Base base;
@@ -95,14 +130,14 @@ typedef struct
   JEX_Base base;
   JAST_Expr *container;
   JS_String *member_name;
-} JAST_Dot_Expr;
+} JEX_Dot;
 
 typedef struct
 {
   JEX_Base base;
   JAST_Expr *container;
   JAST_Expr *index;
-} JAST_Index_Expr;
+} JEX_Index;
 
 typedef struct
 {
@@ -110,13 +145,13 @@ typedef struct
   JAST_Expr *function;
   size_t n_args;
   JAST_Expr **args;
-} JAST_Invoke_Expr;
+} JEX_Invoke;
 
 typedef struct 
 {
   JEX_Base base;
   JAST_Expr *lhs, *rhs;
-} JAST_Assign_Expr;
+} JEX_Assign;
 
 typedef struct
 {
@@ -125,7 +160,7 @@ typedef struct
   unsigned n_args;
   JEX_Var **args;
   JEX *body;
-} JAST_FunctionValue_Expr;
+} JEX_FunctionValue;
 
 typedef struct
 {
@@ -133,25 +168,25 @@ typedef struct
   size_t n_args;
   JS_String **args;
   JEX *body;         // either RETURN (implicit return); or COMPOUND
-} JAST_Arrow_Expr;
+} JEX_ArrowValue;
 
 typedef struct
 {
   JEX_Base base;
   double value;
-} JAST_NumberValue_Expr;
+} JEX_NumberValue;
 
 typedef struct
 {
   JEX_Base base;
   JS_String *value;
-} JAST_StringValue_Expr;
+} JEX_StringValue;
 
 typedef struct
 {
   JEX_Base base;
   struct JS_Regex *regex;
-} JAST_RegexValue_Expr;
+} JEX_RegexValue;
 
 typedef struct 
 {
@@ -202,7 +237,38 @@ typedef struct
   JEX *ctor;
   unsigned n_args;
   JEX **args;
-} JEX_New_Expr;
+} JEX_New;
+
+union JEX {
+  JEX_Type type;
+  JEX_Base base;
+
+  JEX_Group v_group;
+  JEX_Goto v_goto;
+  JEX_GotoIf v_goto_if;
+  JEX_GotoTable v_goto_table;
+  JEX_Label v_label;
+  JEX_With v_with;
+  JEX_TryCatch v_try_catch;
+  JEX_Throw v_throw;
+  JEX_Return v_return;
+  JEX_UnaryOp v_unary_op;
+  JEX_BinaryOp v_binary_op;
+  JEX_Dot v_dot;
+  JEX_Index v_index;
+  JEX_Invoke v_invoke;
+  JEX_Assign v_assign;
+  JEX_FunctionValue v_function_value;
+  JEX_ArrowValue v_arrow_value;
+  JEX_NumberValue v_number_value;
+  JEX_StringValue v_string_value;
+  JEX_RegexValue v_regex_value;
+  JEX_TemplateValue v_template_value;
+  JEX_ArrayValue v_array_value;
+  JEX_ObjectValue v_object_value;
+  JEX_Identifier v_identifier;
+  JEX_New v_new;
+};
 
 JEX      *jex_masticate_expr      (JEX_Context *context,
                                          JAST_Expr   *expr);
