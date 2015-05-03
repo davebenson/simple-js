@@ -1,3 +1,5 @@
+#include "jex.h"
+
 static inline JS_Boolean
 is_constant (JAST_Expr *e)
 {
@@ -26,18 +28,19 @@ static JAST_Expr *
 process_unary_op (Jex_Context *context,
                   JAST_UnaryOp_Expr *expr)
 {
-  JAST_Expr *sub = jex_context_expr (context, expr->sub);
+  JEX_Var subvar;
+  JEX *sub = jex_compile_expr (context, expr->sub, &subvar);
   if (sub == NULL)
     return NULL;
-  if (is_constant (sub)
+  if (is_constant (context, jex, subvar)
    && is_pure_unary_op (expr->op)
    && context->do_constant_folding)
     return jex_constprop_fold_unary_op (expr->op, sub);
   else
-    return jast_expr_new_unary_op (sub->op, sub);
+    return jex_new_unary_op (sub->op, sub);
 }
 
-static JAST_Expr *
+static JEX *
 process_cond (Jex_Context *context,
               JAST_Cond_Expr *expr)
 {
@@ -46,11 +49,12 @@ process_cond (Jex_Context *context,
   JAST_Expr **terms_out = ..;
   size_t n_terms_out = 0;
   JAST_Expr *e;
+  JEX *rv = jex_group_new ();
   for (size_t i = 0; i < n_cond; i++)
     {
       e = jex_context_expr (context, expr->terms[2*i]);
       if (!e)
-        return NULL;
+        goto error_cleanup;
       if (is_constant (e))
         {
           if (jex_constprop_evaluates_true (e))
@@ -58,7 +62,7 @@ process_cond (Jex_Context *context,
               jast_expr_free (e);
               e = jex_context_expr (context, expr->terms[2*i+1]);
               if (!e)
-                return NULL;
+                goto error_cleanup;
               terms_out[n_terms_out++] = e;
               goto done;
             }
@@ -73,7 +77,7 @@ process_cond (Jex_Context *context,
           terms_out[n_terms_out++] = e;
           e = jex_context_expr (context, expr->terms[2*i+1]);
           if (!e)
-            return NULL;
+            goto error_cleanup;
           terms_out[n_terms_out++] = e;
         }
     }
@@ -86,6 +90,10 @@ process_cond (Jex_Context *context,
     return terms_out[0];
           
   return jast_expr_new_cond (n_terms_out, terms_out);
+
+error_cleanup:
+  jex_free (rv);
+  return NULL;
 }
 
 static JAST_Expr *
@@ -157,8 +165,9 @@ process_template (Jex_Context *context,
 }
 
 
-JAST_Expr *jex_masticate_expr (Jex_Context *context,
-                             JAST_Expr   *expr)
+JEX *
+jex_masticate_expr (Jex_Context *context,
+                    JAST_Expr   *expr)
 {
   switch (expr->type)
     {
@@ -258,25 +267,163 @@ JAST_Expr *jex_masticate_expr (Jex_Context *context,
       case JAST_EXPR_BOOLEAN_VALUE:
       case JAST_EXPR_UNDEFINED_VALUE:
       case JAST_EXPR_NULL_VALUE:
-        return jast_expr_copy (expr);
+        {
+          JEX_Constant cvalue;
+          if (!jex_constprop_get_value (expr, &cvalue))
+            assert(NO);
+          return jex_new_constant (expr, cvalue);
+        }
 
       case JAST_EXPR_IDENTIFIER:
         {
-          Jex_Var *v = jex_context_lookup_var (...);
-          if (v)
+          Jex_Var *v = jex_context_lookup_var (context, expr->identifier_expr.name);
+          if (v != NULL)
             {
-              ... note that the variable is captured, if we are in a nested function
+              return jex_new_local_var (v);
             }
           else
             {
-              ... must be a global
+              return jex_new_global (expr->identifier_expr.name);
             }
         }
     }
 }
 
-JAST_Statement *jex_masticate_statement (Jex_Context *context,
-                                         JAST_Statement *stmt)
+static JEX *
+process_compound_statement (Jex_Context *context,
+                            JAST_Compound_Statement *stmt)
 {
-...
+  JEX **subs = alloca (sizeof (JEX *) * stmt->n_subs);
+  for (size_t i = 0; i < stmt->n_subs; i++)
+    {
+      JEX *sub = jex_masticate_statement (context, stmt->subs[i]);
+      if (sub == NULL)
+        {
+          return NULL;
+        }
+      subs[i] = sub;
+    }
+  return jex_new_compound (stmt->n_subs, subs);
+}
+
+// Pseudo-code of IF implementation
+//   {
+//    goto_if !condition1, label1
+//    body1
+//    goto last_label;
+//   label1:
+//    goto_if !condition2, label2
+//    body2
+//    goto last_label;
+//   label2:
+//    else_body
+//   last_label:
+//   }
+static JEX *
+process_if_statement (Jex_Context *context, JAST_If_Statement *stmt)
+{
+  size_t max_subs = (stmt->n_conditional_statements * 4)  /* goto_if, body, goto last_label, label */
+                  + (stmt->else_body ? 1 : 0)
+                  + 1; //  last_label
+  JEX **subs = alloca (sizeof (JEX *) * max_subs);
+  size_t at = 0;
+  JS_String *last_label = jex_make_string (context, "if_last_label");
+  for (size_t i = 0; i < stmt->n_conditional_statements; i++)
+    {
+      JS_String *target = jex_make_string (context, "if_cond_target");
+
+      JEX *cond = jex_masticate_expr (context, stmt->conditional_statements[i].condition);
+      if (is_constant (cond))
+        {
+          JAST_Statement *body;
+          if (jex_constprop_evaluates_true (cond))
+            {
+              body = stmt->conditional_statements[i].body;
+            }
+          else
+            {
+              body = stmt->else_body;
+            }
+          if (body != NULL)
+            {
+              ...
+            }
+          goto done_with_else;
+        }
+
+      // Normal case: non-constant condition.
+
+      //  (normal case: emit goto_if)
+      subs[at++] = jex_new_goto_if (cond, JS_FALSE, target);
+
+      //  (normal case: emit body for this conditianal- for when cond is true)
+      JEX *body = jex_masticate_statement (context, stmt->conditional_statements[i].body);
+      if (body == NULL)
+        return NULL;
+      subs[at++] = body;
+
+      //  (normal case: emit jump to end- for when cond is true)
+      subs[at++] = jex_new_goto (last_label);
+
+      //  (normal case: emit target to earlier conditional jump)
+      subs[at++] = jex_new_label (target);
+    }
+  if (stmt->else_body != NULL)
+    {
+      ...
+    }
+
+  subs[at++] = jex_new_label (last_label);
+
+  return jex_new_compound (at, subs);
+}
+
+static JEX *
+process_switch_statement (Jex_Context *context, JAST_Switch_Statement *stmt)
+{
+}
+
+JEX *
+jex_masticate_statement (Jex_Context *context,
+                         JAST_Statement *stmt)
+{
+  switch (stmt->type)
+    {
+      case JAST_STATEMENT_COMPOUND:
+        return process_compound_statement (context, &stmt->compound_statement);
+
+      case JAST_STATEMENT_IF:
+        // emit labels and conditional jumps
+        return process_if_statement (context, &stmt->if_statement);
+
+      case JAST_STATEMENT_SWITCH:
+        // i thought there was some impl in jackass.
+        return process_switch_statement (context, &stmt->switch_statement);
+
+      case JAST_STATEMENT_FOR:
+        //{
+        //  init
+        // label1:
+        //  goto_if !condition, label3
+        //  body
+        // label2:    // used for continue statements
+        //  advance
+        //  goto label1
+        // label3:    // also used for break statements
+        //}
+        ...
+      case JAST_STATEMENT_FOR_IN:                /* includes "for...of..." */
+      case JAST_STATEMENT_WHILE:
+      case JAST_STATEMENT_DO_WHILE:
+      case JAST_STATEMENT_WITH:
+      case JAST_STATEMENT_VARIABLE_DECLARATIONS:
+        
+      case JAST_STATEMENT_TRY_CATCH:
+      case JAST_STATEMENT_THROW:
+      case JAST_STATEMENT_LABEL:
+      case JAST_STATEMENT_BREAK:
+      case JAST_STATEMENT_CONTINUE:
+      case JAST_STATEMENT_RETURN:
+      case JAST_STATEMENT_EXPRESSION:
+    }
 }

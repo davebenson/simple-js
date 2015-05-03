@@ -18,6 +18,22 @@
  */
 typedef union JEX JEX;
 
+void jex_free (JEX *jex);
+
+typedef enum
+{
+  JEX_CONSTANT_TYPE_STRING,
+  JEX_CONSTANT_TYPE_NUMBER,
+} JEX_ConstantType;
+
+typedef struct {
+  JEX_ConstantType type;
+  union {
+    JS_String *v_string;
+    double v_number;
+  } info;
+} JEX_Constant;
+
 typedef enum
 {
   JEX_TYPE_GROUP,
@@ -43,43 +59,53 @@ typedef enum
   JEX_TYPE_TEMPLATE_VALUE,
   JEX_TYPE_ARRAY_VALUE,
   JEX_TYPE_OBJECT_VALUE,
-  JEX_TYPE_IDENTIFIER,
+  JEX_TYPE_LOCAL_VAR,
+  JEX_TYPE_GLOBAL_VAR,
   JEX_TYPE_NEW
 } JEX_Type;
 
 
 typedef struct JEX_Base {
   JEX_Type type;
+  JEX *prev_sibling;
+  JEX *next_sibling;
 } JEX_Base;
 
 typedef struct JEX_Group {
   JEX_Base base;
-  size_t n_subs;
-  JEX **subs;
+  JEX *first_child;
+  JEX *last_child;
 } JEX_Group;
 
-typedef struct JEX_Cond {
-  JEX_Base base;
-  size_t n_subs;
-  JEX **subs;
-} JEX_Group;
+JEX *jex_group_new ();
+void jex_group_add_child (JEX *group, JEX *child);
+void jex_group_remove_child (JEX *group, JEX *child);
 
 typedef struct JEX_Goto {
   JEX_Base base;
-  JS_String *label_name;
-  JEX_Label *label;
+  JEX *target;
 } JEX_Goto;
+
+JEX *jex_goto_new ();
+void jex_goto_set_target (JEX *gotojex, JEX *target);
 
 typedef struct JEX_GotoIf {
   JEX_Base base;
-  ... condition
+  JEX *condition;
+  JS_Boolean goto_if_true;
+  JEX *target;
+} JEX_GotoIf;
+
+typedef struct JEX_GotoTableEntry {
+  JEX_Constant value;
   JS_String *label_name;
   JEX_Label *label;
-} JEX_GotoIf;
+} JEX_GotoTableEntry;
 
 typedef struct JEX_GotoTable {
   JEX_Base base;
-  ... table of values and labels
+  size_t n_entries;
+  JEX_GotoTableEntry *entries;
 } JEX_GotoTable;
 
 typedef struct JEX_Label {
@@ -87,11 +113,11 @@ typedef struct JEX_Label {
   JS_String *name;
 } JEX_Label;
 
-typedef struct {
-  JAST_Base_Statement base;
-  JEX *expr;
-  JEX *body;
-} JEX_With;
+////typedef struct {
+////  JAST_Base_Statement base;
+////  JEX *expr;
+////  JEX *body;
+////} JEX_With;
 
 typedef struct {
   JEX_Base base;
@@ -104,7 +130,7 @@ typedef struct {
 typedef struct {
   JEX_Base base;
   JEX *throw_expr;
-} JAST_Throw;
+} JEX_Throw;
 
 typedef struct {
   JEX_Base base;
@@ -270,10 +296,11 @@ union JEX {
   JEX_New v_new;
 };
 
-JEX      *jex_masticate_expr      (JEX_Context *context,
-                                         JAST_Expr   *expr);
-JEX      *jex_masticate_statement (JEX_Context *context,
-                                         JAST_Statement *stmt);
+JEX      *jex_compile_expr      (JEX_Context *context,
+                                 JAST_Expr   *expr,
+                                 JEX_Var     *var_out_opt);
+JEX      *jex_compile_statement (JEX_Context *context,
+                                 JAST_Statement *stmt);
 
 
 
@@ -281,6 +308,9 @@ JEX      *jex_masticate_statement (JEX_Context *context,
 /* --- Constant Propagation Section --- */
 JS_Boolean
 jex_constprop_is_foldable_expr_type (JEX_Type type);
+
+JS_Boolean
+jex_constprop_get_value (JEX *expr, JEX_Constant *out);
 
 JAST_Expr *
 jex_constprop_fold_unary_op (JAST_UnaryOp_Type op, JEX *const_sub);
@@ -298,9 +328,19 @@ JS_Boolean jex_constprop_is_ns_foldable_func (JS_String namespace_name,
 
 /* --- Context manipulation --- */
 /* For use by jex_masticate. */
-void     jex_context_push_scope (...);
-void     jex_context_pop_scope (...);
-Jex_Var *jex_context_lookup_var (...);
-Jex_Var *jex_context_alloc_var (...);
+void     jex_context_push_scope       (JEX_Context *context,
+                                 ...);
+void     jex_context_pop_scope        (JEX_Context *context,
+                                 ...);
+Jex_Var *jex_context_lookup_var       (JEX_Context *context,
+                                       JS_String   *name);
+Jex_Var *jex_context_alloc_var        (JEX_Context *context,
+                                       JS_String   *name);
 
-JAST_Expr *
+
+/* --- allocators --- */
+JEX * jex_new_local_var      (JEX_Var      *var);
+JEX * jex_new_global         (JS_String    *name);
+JEX * jex_new_constant_take  (JEX_Constant *value);
+
+          return jex_new_constant (expr, cvalue);
