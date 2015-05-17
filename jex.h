@@ -42,6 +42,7 @@ typedef enum
   JEX_TYPE_GOTO_TABLE,
   JEX_TYPE_LABEL,
   JEX_TYPE_WITH,
+  JEX_TYPE_EMPTY,
   JEX_TYPE_TRY_CATCH,
   JEX_TYPE_THROW,
   JEX_TYPE_RETURN,
@@ -75,11 +76,25 @@ typedef struct JEX_Group {
   JEX_Base base;
   JEX *first_child;
   JEX *last_child;
+
+  JS_Boolean is_scope;                  // scope for let/const variables
+
+  JEX_Var *first_scope_var;
+  JEX_Var *last_scope_var;
+
+  JEX *optional_terminal;
 } JEX_Group;
 
 JEX *jex_group_new ();
 void jex_group_add_child (JEX *group, JEX *child);
 void jex_group_remove_child (JEX *group, JEX *child);
+
+// Creates a terminal no-op
+JEX *jex_group_get_terminal (JEX *group);
+
+typedef struct JEX_Empty {
+  JEX_Base base;
+} JEX_Empty;
 
 typedef struct JEX_Goto {
   JEX_Base base;
@@ -91,19 +106,20 @@ void jex_goto_set_target (JEX *gotojex, JEX *target);
 
 typedef struct JEX_GotoIf {
   JEX_Base base;
-  JEX *condition;
+  JEX_Var *condition;
   JS_Boolean goto_if_true;
   JEX *target;
 } JEX_GotoIf;
+JEX *jex_goto_if_new (JEX_Var *condition, JS_Boolean goto_if_true);
 
 typedef struct JEX_GotoTableEntry {
   JEX_Constant value;
-  JS_String *label_name;
-  JEX_Label *label;
+  JEX *target;
 } JEX_GotoTableEntry;
 
 typedef struct JEX_GotoTable {
   JEX_Base base;
+  JEX_Var *switch_value;
   size_t n_entries;
   JEX_GotoTableEntry *entries;
 } JEX_GotoTable;
@@ -298,12 +314,45 @@ union JEX {
 
 JEX      *jex_compile_expr      (JEX_Context *context,
                                  JAST_Expr   *expr,
-                                 JEX_Var     *var_out_opt);
+                                 JEX_Var    **var_out_opt);
 JEX      *jex_compile_statement (JEX_Context *context,
                                  JAST_Statement *stmt);
 
+// NOTE: By this phase, "var a = 1" has been hoisted into "let a" and "a = 1".
+typedef enum {
+  JEX_VAR_CONSTANT_VALUE,
+  JEX_VAR_TMP,
+  JEX_VAR_LET,
+  JEX_VAR_CONST,
+} JEX_Var_Type;
+typedef struct JEX_Var_ConstantValue
+{
+  JEX_Var_Type type;
+  JS_Value *value;
+} JEX_Var_ConstantValue;
 
+typedef struct JEX_Var_Scoped
+{
+  JEX_Var_Type type;
+  JS_String *name;
+  JEX *scope;
+  JEX_Var *prev_in_scope;
+  JEX_Var *next_in_scope;
+} JEX_Var_Scoped;
 
+typedef struct JEX_Var_Tmp
+{
+  JEX_Var_Type type;
+} JEX_Var_Tmp;
+  
+
+typedef union JEX_Var {
+  JEX_Var_Type type;
+  JEX_Var_ConstantValue v_constant_value;
+  JEX_Var_Tmp v_tmp;
+  JEX_Var_Scoped v_let;
+  JEX_Var_Scoped v_const;
+} JEX_Var;
 
 /* --- Constant Propagation Section --- */
 JS_Boolean
@@ -329,12 +378,13 @@ JS_Boolean jex_constprop_is_ns_foldable_func (JS_String namespace_name,
 /* --- Context manipulation --- */
 /* For use by jex_masticate. */
 void     jex_context_push_scope       (JEX_Context *context,
-                                 ...);
-void     jex_context_pop_scope        (JEX_Context *context,
-                                 ...);
-Jex_Var *jex_context_lookup_var       (JEX_Context *context,
+                                       JS_String   *opt_name,
+                                       JEX         *continue_target,
+                                       JEX         *break_target);
+void     jex_context_pop_scope        (JEX_Context *context);
+JEX_Var *jex_context_lookup_var       (JEX_Context *context,
                                        JS_String   *name);
-Jex_Var *jex_context_alloc_var        (JEX_Context *context,
+JEX_Var *jex_context_alloc_var        (JEX_Context *context,
                                        JS_String   *name);
 
 
@@ -342,5 +392,3 @@ Jex_Var *jex_context_alloc_var        (JEX_Context *context,
 JEX * jex_new_local_var      (JEX_Var      *var);
 JEX * jex_new_global         (JS_String    *name);
 JEX * jex_new_constant_take  (JEX_Constant *value);
-
-          return jex_new_constant (expr, cvalue);

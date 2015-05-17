@@ -1,4 +1,7 @@
 #include "jex.h"
+#include "deb-array.h"
+
+
 
 static inline JS_Boolean
 is_constant (JAST_Expr *e)
@@ -46,7 +49,6 @@ process_cond (Jex_Context *context,
 {
   assert(expr->n_terms % 2 == 1);
   unsigned n_cond = expr->n_terms / 2;
-  JAST_Expr **terms_out = ..;
   size_t n_terms_out = 0;
   JAST_Expr *e;
   JEX *rv = jex_group_new ();
@@ -166,8 +168,8 @@ process_template (Jex_Context *context,
 
 
 JEX *
-jex_masticate_expr (Jex_Context *context,
-                    JAST_Expr   *expr)
+jex_compile_expr (Jex_Context *context,
+                  JAST_Expr   *expr)
 {
   switch (expr->type)
     {
@@ -293,17 +295,17 @@ static JEX *
 process_compound_statement (Jex_Context *context,
                             JAST_Compound_Statement *stmt)
 {
-  JEX **subs = alloca (sizeof (JEX *) * stmt->n_subs);
+  JEX *rv = jex_group_new ();
   for (size_t i = 0; i < stmt->n_subs; i++)
     {
-      JEX *sub = jex_masticate_statement (context, stmt->subs[i]);
+      JEX *sub = jex_compile_statement (context, stmt->subs[i]);
       if (sub == NULL)
         {
           return NULL;
         }
-      subs[i] = sub;
+      jex_group_add_child (rv, sub);
     }
-  return jex_new_compound (stmt->n_subs, subs);
+  return rv;
 }
 
 // Pseudo-code of IF implementation
@@ -322,21 +324,17 @@ process_compound_statement (Jex_Context *context,
 static JEX *
 process_if_statement (Jex_Context *context, JAST_If_Statement *stmt)
 {
-  size_t max_subs = (stmt->n_conditional_statements * 4)  /* goto_if, body, goto last_label, label */
-                  + (stmt->else_body ? 1 : 0)
-                  + 1; //  last_label
-  JEX **subs = alloca (sizeof (JEX *) * max_subs);
-  size_t at = 0;
-  JS_String *last_label = jex_make_string (context, "if_last_label");
+  JEX *rv = jex_group_new ();
+  JEX *last_if_not = NULL;
   for (size_t i = 0; i < stmt->n_conditional_statements; i++)
     {
-      JS_String *target = jex_make_string (context, "if_cond_target");
-
-      JEX *cond = jex_masticate_expr (context, stmt->conditional_statements[i].condition);
-      if (is_constant (cond))
+      JEX_Var condvar;
+      JEX *cond = jex_compile_expr (context, stmt->conditional_statements[i].condition, &condvar);
+      if (is_constant (condvar))
         {
           JAST_Statement *body;
-          if (jex_constprop_evaluates_true (cond))
+          JS_Boolean is_true = jex_constprop_evaluates_true (condvar);
+          if (is_true)
             {
               body = stmt->conditional_statements[i].body;
             }
@@ -346,45 +344,200 @@ process_if_statement (Jex_Context *context, JAST_If_Statement *stmt)
             }
           if (body != NULL)
             {
-              ...
+              JEX *b = jex_compile_statement (context, body, NULL);
+              jex_group_add_child (rv, b);
+              if (last_if_not)
+                {
+                  jex_goto_set_target (last_if_not, b);
+                  last_if_not = NULL;
+                }
             }
           goto done_with_else;
         }
 
       // Normal case: non-constant condition.
+      jex_group_add_child (rv, cond);
+      if (last_if_not != NULL)
+        {
+          jex_goto_set_target (last_if_not, cond);
+          last_if_not = NULL;
+        }
 
       //  (normal case: emit goto_if)
-      subs[at++] = jex_new_goto_if (cond, JS_FALSE, target);
+      last_if_not = jex_new_goto_if (condvar, JS_FALSE);
+      jex_group_add_child (rv, last_if_not);
 
       //  (normal case: emit body for this conditianal- for when cond is true)
-      JEX *body = jex_masticate_statement (context, stmt->conditional_statements[i].body);
-      if (body == NULL)
-        return NULL;
-      subs[at++] = body;
+      JEX *body = jex_compile_statement (context, stmt->conditional_statements[i].body);
+      jex_group_add_child (rv, body);
 
       //  (normal case: emit jump to end- for when cond is true)
-      subs[at++] = jex_new_goto (last_label);
-
-      //  (normal case: emit target to earlier conditional jump)
-      subs[at++] = jex_new_label (target);
+      JEX *goto_end = jex_goto_new ();
+      jex_goto_set_target (goto_end, jex_group_get_terminal (rv));
     }
   if (stmt->else_body != NULL)
     {
-      ...
+      JEX *eb = jex_compile_statement (context, stmt->else_body);
+      if (last_if_not)
+        jex_goto_set_target (last_if_not, eb);
+      jex_group_add_child (rv, eb);
+    }
+  else
+    {
+      if (last_if_not)
+        jex_goto_set_target (last_if_not, jex_group_get_terminal (rv));
     }
 
-  subs[at++] = jex_new_label (last_label);
-
-  return jex_new_compound (at, subs);
+  return rv;
 }
 
 static JEX *
 process_switch_statement (Jex_Context *context, JAST_Switch_Statement *stmt)
 {
+  JEX *rv = jex_group_new ();
+
+  // Compile main expression
+  JEX_Var mainexprvar;
+  JEX *mainexpr = jex_compile_expr (context, stmt->expr, &mainexprvar);
+  jex_group_add_child (rv, mainexpr);
+
+  // Create jump-table to populate.
+  DEB_ARRAY_STRUCT(JEX_GotoTableEntry) cur_entries = DEB_ARRAY_INITIALIZER(JEX_GotoTableEntry);
+
+  JEX *last_table;
+  
+#define RESET_LAST_TABLE() \
+  do{ \
+    last_table = jex_goto_table_new (); \
+    last_table->v_goto_table.switch_value = mainexprvar; \
+    jex_group_add_child (rv, last_table); \
+  }while(0)
+
+#define MAYBE_FLUSH_GOTO_TABLE() \
+  do{ \
+    if (cur_entries.n > 0) \
+      { \
+        last_table->v_goto_table.n_entries = cur_entries.n; \
+        last_table->v_goto_table.n_entries = DEB_ARRAY_MAKE_COPY (JEX_GotoTableEntry, cur_entries); \
+        cur_entries.n = 0; \
+      } \
+  }while(0)
+
+  RESET_LAST_TABLE();
+
+  for (size_t ci = 0; ci < stmt->n_clauses; ci++)
+    {
+      switch (stmt->clauses[ci].clause_type)
+        {
+        case JAST_SWITCH_CLAUSE_CASE:
+          ... compile expression
+          if (e->type == JEX_TYPE_EMPTY && evar->type == JEX_VAR_CONSTANT_VALUE)
+            {
+              // if constant...
+              JEX_GotoTableEntry entry = {
+                ... value,
+                NULL
+              };
+              DEB_ARRAY_APPEND(cur_entries, JEX_GotoTableEntry, entry);
+            }
+          else 
+            {
+              MAYBE_FLUSH_GOTO_TABLE();
+
+              //    goto if not equal --- target is next jump table
+              ...
+
+              //    create new jump table base on same var
+              RESET_LAST_TABLE();
+            }
+          break;
+
+        case JAST_SWITCH_CLAUSE_STATEMENT:
+          assert (ci > 0);
+          ...
+
+        case JAST_SWITCH_CLAUSE_DEFAULT:
+          ...
+        }
+    }
+  MAYBE_FLUSH_GOTO_TABLE();
+
+#undef RESET_LAST_TABLE
+#undef MAYBE_FLUSH_GOTO_TABLE
+
+  // would really be nice to filter goto-table's
+  // with 0 elements at this point.
+  ...
+}
+
+//{
+//  init
+// label1:
+//  goto_if !condition, label3
+//  body
+// label2:    // used for continue statements
+//  advance
+//  goto label1
+// label3:    // also used for break statements
+//}
+static JEX *
+process_for_statement (Jex_Context *context, JAST_For_Statement *stmt)
+{
+  JEX *rv = jex_group_new ();
+  if (stmt->initial != NULL)
+    {
+      JEX *tmp = jex_compile_statement (context, stmt->initial);
+      jex_group_add_child (rv, tmp);
+    }
+  JEX *top_of_loop = NULL;
+  JEX_Var *cvar = NULL;
+  if (stmt->condition != NULL)
+    {
+      JEX *tmp = jex_compile_expr (context, stmt->initial, &cvar);
+      jex_group_add_child (rv, tmp);
+      if (top_of_loop == NULL)
+        top_of_loop = tmp;
+    }
+  if (cvar != NULL)
+    {
+      // Append GOTO if false.
+      JEX *tmp = jex_goto_if_new (cvar, JS_FALSE);
+      jex_goto_set_target (tmp, jex_group_get_terminal (rv));
+      jex_group_add_child (rv, tmp);
+      if (top_of_loop == NULL)
+        top_of_loop = tmp;
+    }
+  if (stmt->body != NULL)
+    {
+      jex_context_push_scope (context, stmt->label, ...continue, ...break);
+      JEX *tmp = jex_compile_statement (context, stmt->body);
+      jex_group_add_child (rv, tmp);
+      if (top_of_loop == NULL)
+        top_of_loop = tmp;
+      jex_context_pop_scope (context);
+    }
+  if (stmt->advance != NULL)
+    {
+      JEX *tmp = jex_compile_statement (context, stmt->advance);
+      jex_group_add_child (rv, tmp);
+      if (top_of_loop == NULL)
+        top_of_loop = tmp;
+    }
+
+  // Append GOTO top of loop.
+  JEX *goto_top = jex_goto_new ();
+  jex_group_add_child (rv, goto_top);
+  if (top_of_loop == NULL)
+    top_of_loop = goto_top;
+
+  // Set target to top of loop.
+  goto_top->v_goto.target = top_of_loop;
+
+  return rv;
 }
 
 JEX *
-jex_masticate_statement (Jex_Context *context,
+jex_compile_statement (Jex_Context *context,
                          JAST_Statement *stmt)
 {
   switch (stmt->type)
@@ -397,21 +550,11 @@ jex_masticate_statement (Jex_Context *context,
         return process_if_statement (context, &stmt->if_statement);
 
       case JAST_STATEMENT_SWITCH:
-        // i thought there was some impl in jackass.
         return process_switch_statement (context, &stmt->switch_statement);
 
       case JAST_STATEMENT_FOR:
-        //{
-        //  init
-        // label1:
-        //  goto_if !condition, label3
-        //  body
-        // label2:    // used for continue statements
-        //  advance
-        //  goto label1
-        // label3:    // also used for break statements
-        //}
-        ...
+        return process_for_statement (context, &stmt->for_statement);
+
       case JAST_STATEMENT_FOR_IN:                /* includes "for...of..." */
       case JAST_STATEMENT_WHILE:
       case JAST_STATEMENT_DO_WHILE:
