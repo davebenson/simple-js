@@ -38,9 +38,9 @@ static inline unsigned jutf8_encode1 (unsigned unicode_codepoint, char *utf8_out
 #define IS_DECIMAL_DIGIT(c)       \
   ('0' <= (c) && (c) <= '9')
 #define IS_OCTAL_DIGIT(c)         \
-  ('0' <= (c) && (c) <= '7')
+  (((c) & 0xf8) == '0')
 #define IS_BINARY_DIGIT(c)        \
-  ('0' <= (c) && (c) <= '1')
+  (((c) & 0xfe) == '0')
 #define IS_HEXIDECIMAL_DIGIT(c)   \
   (  IS_DECIMAL_DIGIT(c)          \
   || ('a' <= (c) && (c) <= 'f')   \

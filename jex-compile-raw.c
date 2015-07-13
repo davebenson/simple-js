@@ -430,12 +430,13 @@ process_switch_statement (Jex_Context *context, JAST_Switch_Statement *stmt)
       switch (stmt->clauses[ci].clause_type)
         {
         case JAST_SWITCH_CLAUSE_CASE:
-          ... compile expression
-          if (e->type == JEX_TYPE_EMPTY && evar->type == JEX_VAR_CONSTANT_VALUE)
+          JEX_Var *case_var;
+          JEX *case_expr = jex_compile_expr (context, stmt->clauses[ci].info.case_value, &case_var);
+          if (case_expr->type == JEX_TYPE_EMPTY && case_var->type == JEX_VAR_CONSTANT_VALUE)
             {
               // if constant...
               JEX_GotoTableEntry entry = {
-                ... value,
+                case_var->v_constant_value.value,
                 NULL
               };
               DEB_ARRAY_APPEND(cur_entries, JEX_GotoTableEntry, entry);
@@ -444,11 +445,18 @@ process_switch_statement (Jex_Context *context, JAST_Switch_Statement *stmt)
             {
               MAYBE_FLUSH_GOTO_TABLE();
 
+              jex_group_add_child (rv, case_expr);
+
               //    goto if not equal --- target is next jump table
-              ...
+              JEX_Var *rv = jex_context_alloc_var (context, NULL);
+              JEX *binop = jex_new_binop (JEX_BINARY_OP_EXACT_EQUALS, rv, case_var, mainexprvar);
+              jex_group_add_child (rv, binop);
+              JEX *goto_ne = jex_new_goto_if (...);
+              jex_group_add_child (rv, goto_ne);
 
               //    create new jump table base on same var
               RESET_LAST_TABLE();
+              jex_goto_set_target (goto_ne, last_table);
             }
           break;
 
@@ -536,6 +544,34 @@ process_for_statement (Jex_Context *context, JAST_For_Statement *stmt)
   return rv;
 }
 
+static JEX *
+process_do_while_statement (Jex_Context *context, JAST_DoWhile_Statement *stmt)
+{
+  JEX *rv = jex_group_new ();
+  JEX *body_comp = jex_compile_statement (context, stmt->body);
+  jex_group_add_child (rv, body_comp);
+  JEX *condition_expr = jex_compile_expr (context, stmt->condition, &cvar);
+  jex_group_add_child (rv, condition_expr);
+  JEX *goto_ex = jex_goto_if_new (cvar, JS_TRUE);
+  jex_group_add_child (rv, goto_ex);
+  jex_goto_set_target (goto_ex, body_comp);
+  return rv
+}
+
+static JEX *
+process_while_statement (Jex_Context *context, JAST_While_Statement *stmt)
+{
+  JEX *rv = jex_group_new ();
+  JEX *condition_expr = jex_compile_expr (context, stmt->condition, &cvar);
+  jex_group_add_child (rv, condition_expr);
+  JEX *goto_ex = jex_goto_if_new (cvar, JS_FALSE);
+  jex_group_add_child (rv, goto_ex);
+  JEX *body_comp = jex_compile_statement (context, stmt->body);
+  jex_group_add_child (rv, body_comp);
+  jex_goto_set_target (goto_ex, jex_group_get_terminal (rv));
+  return rv
+}
+
 JEX *
 jex_compile_statement (Jex_Context *context,
                          JAST_Statement *stmt)
@@ -556,17 +592,39 @@ jex_compile_statement (Jex_Context *context,
         return process_for_statement (context, &stmt->for_statement);
 
       case JAST_STATEMENT_FOR_IN:                /* includes "for...of..." */
+        ...
+
       case JAST_STATEMENT_WHILE:
+        return process_while_statement (context, &stmt->while_statement);
+
       case JAST_STATEMENT_DO_WHILE:
+        return process_do_while_statement (context, &stmt->do_while_statement);
+
       case JAST_STATEMENT_WITH:
+        ...
+
       case JAST_STATEMENT_VARIABLE_DECLARATIONS:
+        ...
         
       case JAST_STATEMENT_TRY_CATCH:
+        return process_try_catch_statement (context, &stmt->try_cache_statement);
+
       case JAST_STATEMENT_THROW:
+        return process_throw_statement (context, &stmt->throw_statement);
+
       case JAST_STATEMENT_LABEL:
+        ...
+
       case JAST_STATEMENT_BREAK:
+        ...
+
       case JAST_STATEMENT_CONTINUE:
+        ...
+
       case JAST_STATEMENT_RETURN:
+        ...
+
       case JAST_STATEMENT_EXPRESSION:
+        ...
     }
 }

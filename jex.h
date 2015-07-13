@@ -392,3 +392,7 @@ JEX_Var *jex_context_alloc_var        (JEX_Context *context,
 JEX * jex_new_local_var      (JEX_Var      *var);
 JEX * jex_new_global         (JS_String    *name);
 JEX * jex_new_constant_take  (JEX_Constant *value);
+JEX * jex_new_binop          (JEX_BinaryOp  op,
+                              JEX_Var      *lvalue,
+                              JEX_Var      *rvalue1,
+                              JEX_Var      *rvalue2);
