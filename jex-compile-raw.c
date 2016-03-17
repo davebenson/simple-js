@@ -604,6 +604,7 @@ jex_compile_statement (Jex_Context *context,
         ...
 
       case JAST_STATEMENT_VARIABLE_DECLARATIONS:
+        jex_new_local_var
         ...
         
       case JAST_STATEMENT_TRY_CATCH:
@@ -613,7 +614,7 @@ jex_compile_statement (Jex_Context *context,
         return process_throw_statement (context, &stmt->throw_statement);
 
       case JAST_STATEMENT_LABEL:
-        ...
+        return jex_new_label (...);
 
       case JAST_STATEMENT_BREAK:
         ...

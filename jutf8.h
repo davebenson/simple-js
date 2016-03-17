@@ -30,6 +30,7 @@ JUTF8_Strlen_Result jutf8_strlen (size_t length, const char *text,
 static inline unsigned jutf8_decode1 (size_t utf8_len, const char *utf8, unsigned *unicode_codepoint_out);
 static inline unsigned jutf8_encode1 (unsigned unicode_codepoint, char *utf8_out);
 
+#if 0
 #define LBRACE_CHAR   '{'
 #define LBRACE_STR    "{"
 #define RBRACE_CHAR   '}'
@@ -49,7 +50,7 @@ static inline unsigned jutf8_encode1 (unsigned unicode_codepoint, char *utf8_out
   ( IS_DECIMAL_DIGIT (c) ? ((c) - '0') \
   : ('a' <= (c) && (c) <= 'f') ? (((c) - 'a') + 10) \
   : (((c) - 'A') + 10) )
-
+#endif
 
 static inline unsigned jutf8_encode1 (uint32_t c, char *outbuf)
 {
